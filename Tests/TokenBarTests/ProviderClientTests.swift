@@ -72,6 +72,15 @@ final class ProviderClientTests: XCTestCase {
         XCTAssertNil(reading.lastSuccessAt)
     }
 
+    func testMalformedSuccessTimestampCannotFallbackToFreshCollectionTime() throws {
+        for malformed: Any in ["not-a-date", "", true, -1, "2101-01-01T00:00:00Z"] {
+            let data = try json(["collectedAt": now.timeIntervalSince1970, "accounts": [["id": "quota", "status": "connected", "lastSuccessAt": malformed, "windows": [["remainingPercent": 40]]]]])
+            XCTAssertThrowsError(try ProviderClient.parseSnapshot(data, at: now)) { XCTAssertEqual($0 as? ProviderError, .invalidData) }
+        }
+        let missing = try json(["collectedAt": now.timeIntervalSince1970, "accounts": [["id": "quota", "status": "connected", "lastSuccessAt": NSNull(), "windows": [["remainingPercent": 40]]]]])
+        XCTAssertEqual(try ProviderClient.parseSnapshot(missing, at: now).lastSuccessAt, now)
+    }
+
     func testSnapshotExpiredWindowIsStaleEvenWhenCollectionIsRecent() throws {
         let data = try json(["id": "one", "status": "connected", "lastSuccessAt": now.timeIntervalSince1970, "windows": [["remainingPercent": 40, "resetsAt": now.addingTimeInterval(-1).timeIntervalSince1970]]])
         XCTAssertEqual(try ProviderClient.parseSnapshot(data, at: now).status, .stale)

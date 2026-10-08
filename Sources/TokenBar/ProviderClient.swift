@@ -7,11 +7,17 @@ import Darwin
 struct ProviderClient {
     private let configuration: URLSessionConfiguration
     private let now: () -> Date
+    private let credentialReader: @Sendable (String, String?) throws -> Data
+    private let sshReader: @Sendable ([String]) async throws -> Data
     static let maximumBytes = 2 * 1_024 * 1_024
 
-    init(sessionConfiguration: URLSessionConfiguration = .ephemeral, now: @escaping () -> Date = Date.init) {
+    init(sessionConfiguration: URLSessionConfiguration = .ephemeral, now: @escaping () -> Date = Date.init,
+         credentialReader: @escaping @Sendable (String, String?) throws -> Data = { try CredentialStore.read(service: $0, account: $1) },
+         sshReader: @escaping @Sendable ([String]) async throws -> Data = { try await SnapshotProcessReader().read(executable: "/usr/bin/ssh", arguments: $0) }) {
         configuration = sessionConfiguration
         self.now = now
+        self.credentialReader = credentialReader
+        self.sshReader = sshReader
     }
 
     func fetch(_ config: AccountConfig) async throws -> AccountReading {
@@ -65,7 +71,7 @@ struct ProviderClient {
             return try Self.parseSnapshot(data, sourceAccountID: config.sourceAccountID, source: URL(fileURLWithPath: NSString(string: config.location).expandingTildeInPath).standardizedFileURL.resolvingSymlinksInPath().path, at: now())
         case (.snapshot, .snapshotURL):
             var headers: [String: String] = [:]
-            if let data = try? CredentialStore.read(service: CredentialStore.serviceName, account: config.id.uuidString),
+            if let data = try? credentialReader(CredentialStore.serviceName, config.id.uuidString),
                let raw = String(data: data, encoding: .utf8), let token = Self.secret(raw) {
                 headers["Authorization"] = "Bearer \(token)"
             }
@@ -75,8 +81,9 @@ struct ProviderClient {
             let arguments = try Self.buildSSHArguments(host: config.sshHost ?? "", path: config.location, useSudo: config.sshUseSudo == true)
             let source = "ssh:\(config.sshHost ?? ""):\(config.location)"
             let cacheKey = source + (config.sshUseSudo == true ? ":sudo" : ":user")
+            let reader = sshReader
             let data = try await SnapshotSourceCache.shared.read(key: cacheKey) {
-                try await SnapshotProcessReader().read(executable: "/usr/bin/ssh", arguments: arguments)
+                try await reader(arguments)
             }
             return try Self.parseSnapshot(data, sourceAccountID: config.sourceAccountID, source: source, at: now())
         default: throw ProviderError.invalidConfiguration
@@ -85,7 +92,7 @@ struct ProviderClient {
 
     private func credential(_ config: AccountConfig) throws -> [String: Any] {
         do {
-            let data = config.method == .keychain ? try CredentialStore.read(service: config.location) : try Self.readFile(config.location)
+            let data = config.method == .keychain ? try credentialReader(config.location, nil) : try Self.readFile(config.location)
             return try Self.object(data)
         } catch { throw ProviderError.needsAuth }
     }
@@ -207,7 +214,11 @@ struct ProviderClient {
         }
         let statuses: [String: ReadingStatus] = ["connected": .connected, "stale": .stale, "needsAuth": .needsAuth, "needs_auth": .needsAuth, "unavailable": .unavailable, "notConfigured": .notConfigured, "not_configured": .notConfigured, "unsupported": .unsupported]
         guard let rawStatus = account["status"] as? String, let status = statuses[rawStatus] else { throw ProviderError.invalidData }
-        let observed = date(account["lastSuccessAt"])
+        let rawObserved = account["lastSuccessAt"]
+        let observed = date(rawObserved)
+        // Only absent/null success times may fall back to a document timestamp.
+        // An explicitly malformed timestamp cannot turn an untrusted balance fresh.
+        if let rawObserved, !(rawObserved is NSNull), observed == nil { throw ProviderError.invalidData }
         let checked = date(account["checkedAt"]) ?? date(root["collectedAt"]) ?? observed ?? now
         var result = AccountReading(status: status, checkedAt: checked, lastSuccessAt: observed)
         if let items = account["windows"] {

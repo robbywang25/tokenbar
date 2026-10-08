@@ -26,10 +26,10 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "gauge.with.dots.needle.67percent", accessibilityDescription: "TokenBar 额度")
-            button.image?.isTemplate = true
-            button.imagePosition = .imageLeading
-            button.title = "TokenBar"
+            button.image = nil
+            button.imagePosition = .noImage
+            button.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+            button.title = "—"
             button.toolTip = "查看所有 Agent 额度"
             button.target = self
             button.action = #selector(togglePopover)
@@ -39,12 +39,13 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate {
         popover.animates = true
         popover.contentSize = NSSize(width: 440, height: 620)
         popover.contentViewController = NSHostingController(rootView: DashboardView(store: store))
-        observation = Publishers.CombineLatest3(store.$accounts, store.$readings, store.$now)
+        observation = store.objectWillChange
             .debounce(for: .milliseconds(100), scheduler: RunLoop.main)
-            .sink { [weak self] _, _, _ in
+            .sink { [weak self] in
                 guard let self else { return }
                 let title = self.store.menuTitle
                 if self.statusItem.button?.title != title { self.statusItem.button?.title = title }
+                self.statusItem.button?.toolTip = self.store.menuTooltip
             }
         Task {
             if CommandLine.arguments.contains("--demo") { store.loadDemo() }

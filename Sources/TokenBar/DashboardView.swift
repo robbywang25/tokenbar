@@ -416,11 +416,53 @@ struct DashboardView: View {
                 }
                 .labelsHidden().frame(width: 100)
             }
-            Text("窗口显示实时倒计时，额度按上面的间隔读取。")
-                .font(.caption2).foregroundStyle(.secondary)
+            Divider()
+            menuQuotaSettings
         }
         .font(.subheadline).padding(14)
         .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var menuQuotaSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("菜单栏显示").font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text("已选 \(selectedMenuQuotaCount) 项")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            if store.availableMenuMetrics.isEmpty {
+                Text("暂无可显示的百分比额度")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(store.accounts) { account in
+                    let metrics = store.availableMenuMetrics.filter { $0.accountID == account.id }
+                    if !metrics.isEmpty {
+                        VStack(alignment: .leading, spacing: 7) {
+                            HStack(spacing: 6) {
+                                Text(account.name).font(.system(size: 11, weight: .semibold))
+                                Text(account.displayService).font(.system(size: 10)).foregroundStyle(.secondary)
+                            }
+                            .lineLimit(1)
+                            ForEach(metrics) { metric in
+                                Toggle(metric.windowLabel, isOn: Binding(
+                                    get: { store.menuQuotaSelected(accountID: metric.accountID, windowID: metric.windowID) },
+                                    set: { store.setMenuQuota(accountID: metric.accountID, windowID: metric.windowID, enabled: $0) }
+                                ))
+                                .font(.system(size: 11)).toggleStyle(.switch).controlSize(.mini)
+                                .accessibilityLabel("\(account.name) · \(metric.windowLabel)，在菜单栏显示")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var selectedMenuQuotaCount: Int {
+        store.availableMenuMetrics.filter {
+            store.menuQuotaSelected(accountID: $0.accountID, windowID: $0.windowID)
+        }.count
     }
 
     private var footer: some View {

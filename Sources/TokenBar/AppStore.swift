@@ -14,20 +14,28 @@ final class AppStore: ObservableObject {
     @Published var launchAtLogin = false
     @Published var now = Date()
     @Published var isDemo = false
+    // nil preserves the initial one-metric default; [] is an explicit opt-out.
+    @Published private(set) var menuQuotaSelection: Set<String>?
+    @Published private(set) var rememberedMenuMetrics: [MenuQuotaMetric] = []
 
     private let client: ProviderClient
     private let directory: URL
+    private let defaults: UserDefaults
+    private static let menuSelectionKey = "menuQuotaSelection.v1"
+    private static let menuMetricsKey = "menuQuotaMetrics.v1"
     private var clock: Timer?
     private var poll: Timer?
     private var revision = 0
     private var wakeObserver: NSObjectProtocol?
     private var connecting = false
 
-    init(directory: URL? = nil, client: ProviderClient = ProviderClient(), startTimers: Bool = true) {
+    init(directory: URL? = nil, client: ProviderClient = ProviderClient(), startTimers: Bool = true, defaults: UserDefaults = .standard) {
         self.client = client
+        self.defaults = defaults
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("TokenBar")
+        loadMenuPreferences()
         load()
-        let saved = UserDefaults.standard.double(forKey: "refreshSeconds")
+        let saved = defaults.double(forKey: "refreshSeconds")
         if [30.0, 60, 120].contains(saved) { refreshSeconds = saved }
         launchAtLogin = SMAppService.mainApp.status == .enabled
         if startTimers {
@@ -44,13 +52,95 @@ final class AppStore: ObservableObject {
     }
 
     var menuTitle: String {
-        guard let first = accounts.first, let reading = readings[first.id], reading.isFresh(at: now),
-              let window = reading.windows.first(where: { $0.group == "default" }), let percent = window.remainingPercent else { return "TokenBar" }
-        return "TokenBar \(Int(percent.rounded()))%"
+        let values = selectedMenuMetrics.map(menuValue)
+        return values.isEmpty ? "—" : values.joined(separator: " · ")
+    }
+
+    var menuTooltip: String {
+        let metrics = selectedMenuMetrics
+        guard !metrics.isEmpty else { return "未选择菜单栏额度" }
+        return metrics.map { metric in
+            let value = menuValue(metric)
+            return "\(metric.accountName) · \(metric.windowLabel)：\(value == "—" ? "当前未知" : value)"
+        }.joined(separator: "\n")
+    }
+
+    var availableMenuMetrics: [MenuQuotaMetric] {
+        accounts.flatMap { account -> [MenuQuotaMetric] in
+            let current = (readings[account.id]?.windows ?? []).filter { $0.remainingPercent != nil }.map { window in
+                MenuQuotaMetric(accountID: account.id, windowID: window.id, accountName: account.name,
+                                windowLabel: window.title + (window.model.map { " · " + $0 } ?? ""), group: window.group)
+            }
+            let currentIDs = Set(current.map(\.id))
+            let previous = rememberedMenuMetrics.filter { $0.accountID == account.id && !currentIDs.contains($0.id) }.map { metric in
+                var metric = metric
+                metric.accountName = account.name
+                return metric
+            }
+            return current + previous
+        }
+    }
+
+    func menuQuotaSelected(accountID: UUID, windowID: String) -> Bool {
+        effectiveMenuSelection.contains(MenuQuotaMetric.selectionID(accountID: accountID, windowID: windowID))
+    }
+
+    func setMenuQuota(accountID: UUID, windowID: String, enabled: Bool) {
+        let id = MenuQuotaMetric.selectionID(accountID: accountID, windowID: windowID)
+        guard availableMenuMetrics.contains(where: { $0.id == id }) else { return }
+        var selection = effectiveMenuSelection
+        if enabled { selection.insert(id) } else { selection.remove(id) }
+        menuQuotaSelection = selection
+        rememberMenuChoices()
+    }
+
+    private var effectiveMenuSelection: Set<String> {
+        if let menuQuotaSelection { return menuQuotaSelection }
+        guard let metric = availableMenuMetrics.first(where: { metric in
+            metric.group == "default" && accounts.contains(where: { $0.id == metric.accountID && $0.enabled })
+        }) else { return [] }
+        return [metric.id]
+    }
+
+    private var selectedMenuMetrics: [MenuQuotaMetric] {
+        let selected = effectiveMenuSelection
+        return availableMenuMetrics.filter { selected.contains($0.id) }
+    }
+
+    private func menuValue(_ metric: MenuQuotaMetric) -> String {
+        guard accounts.contains(where: { $0.id == metric.accountID && $0.enabled }),
+              let reading = readings[metric.accountID], reading.isFresh(at: now),
+              let percent = reading.windows.first(where: { $0.id == metric.windowID })?.remainingPercent,
+              percent.isFinite, (0...100).contains(percent) else { return "—" }
+        return "\(Int(percent.rounded()))%"
+    }
+
+    private func loadMenuPreferences() {
+        menuQuotaSelection = defaults.stringArray(forKey: Self.menuSelectionKey).map(Set.init)
+        if let data = defaults.data(forKey: Self.menuMetricsKey), data.count <= 1_048_576,
+           let metrics = try? JSONDecoder().decode([MenuQuotaMetric].self, from: data), metrics.count <= 1_920 {
+            rememberedMenuMetrics = metrics
+        } else { rememberedMenuMetrics = [] }
+    }
+
+    private func rememberMenuChoices(persist: Bool = true) {
+        rememberedMenuMetrics = availableMenuMetrics
+        if let selection = menuQuotaSelection {
+            let prefixes = accounts.map { $0.id.uuidString + "/" }
+            menuQuotaSelection = selection.filter { id in prefixes.contains(where: id.hasPrefix) }
+        }
+        guard persist, !isDemo else { return }
+        if let menuQuotaSelection { defaults.set(menuQuotaSelection.sorted(), forKey: Self.menuSelectionKey) }
+        else { defaults.removeObject(forKey: Self.menuSelectionKey) }
+        if let data = try? JSONEncoder().encode(rememberedMenuMetrics) { defaults.set(data, forKey: Self.menuMetricsKey) }
     }
 
     func refresh() async {
+        // Opening the popover or waking the Mac must reclassify cached values
+        // immediately, even while an earlier network refresh is still running.
+        now = Date()
         guard !isRefreshing, !isDemo else { return }
+        rememberMenuChoices()
         isRefreshing = true
         let currentRevision = revision
         let configs = accounts.filter(\.enabled)
@@ -78,7 +168,7 @@ final class AppStore: ObservableObject {
                 readings[id] = reading
             }
         }
-        if revision == currentRevision { lastRefresh = Date(); persistReadings() }
+        if revision == currentRevision { lastRefresh = Date(); rememberMenuChoices(); persistReadings() }
         now = Date()
         isRefreshing = false
     }
@@ -89,7 +179,7 @@ final class AppStore: ObservableObject {
         defer { connecting = false }
         guard !config.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               config.name.count <= 80, config.location.count <= 4096,
-              !accounts.contains(where: { $0.id == config.id || ($0.provider == config.provider && $0.method == config.method && $0.location == config.location && $0.sourceAccountID == config.sourceAccountID) }) else { throw ProviderError.duplicate }
+              !accounts.contains(where: { $0.id == config.id || Self.sameConfiguredSource($0, config) }) else { throw ProviderError.duplicate }
         var savedSecret = false
         if let secret, !secret.isEmpty {
             guard config.method == .snapshotURL, secret.count <= 16384,
@@ -109,12 +199,26 @@ final class AppStore: ObservableObject {
             revision += 1
             accounts = updated
             readings[config.id] = reading
+            rememberMenuChoices()
             persistReadings()
             errorMessage = nil
         } catch {
             if savedSecret { CredentialStore.delete(account: config.id.uuidString) }
             throw error
         }
+    }
+
+    private static func sameConfiguredSource(_ first: AccountConfig, _ second: AccountConfig) -> Bool {
+        guard first.provider == second.provider, first.method == second.method,
+              first.location == second.location, first.sourceAccountID == second.sourceAccountID else { return false }
+        // An HTTPS endpoint can select different accounts through each Bearer.
+        // Its returned identity is checked after reading; the URL cannot prove duplication.
+        if first.method == .snapshotURL { return false }
+        if first.method == .snapshotSSH {
+            return (first.sshHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines) ==
+                (second.sshHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return true
     }
 
     func remove(_ config: AccountConfig) {
@@ -124,14 +228,18 @@ final class AppStore: ObservableObject {
             if !isDemo { try save(updated, name: "accounts.json") }
             revision += 1
             accounts = updated; readings.removeValue(forKey: config.id)
-            if !isDemo { CredentialStore.delete(account: config.id.uuidString); persistReadings() }
+            rememberMenuChoices()
+            if !isDemo {
+                if config.method == .snapshotURL { CredentialStore.delete(account: config.id.uuidString) }
+                persistReadings()
+            }
         } catch { errorMessage = "无法保存账号变更，请检查本机存储权限。" }
     }
 
     func updateRefreshInterval(_ seconds: Double) {
         guard [30.0, 60, 120].contains(seconds) else { return }
         refreshSeconds = seconds
-        UserDefaults.standard.set(seconds, forKey: "refreshSeconds")
+        defaults.set(seconds, forKey: "refreshSeconds")
         schedulePoll()
     }
 
@@ -157,6 +265,7 @@ final class AppStore: ObservableObject {
         accounts = (try? read([AccountConfig].self, name: "accounts.json")) ?? []
         readings = (try? read([UUID: AccountReading].self, name: "readings.json")) ?? [:]
         readings = readings.filter { id, _ in accounts.contains { $0.id == id } }
+        rememberMenuChoices(persist: false)
     }
 
     private func read<T: Decodable>(_ type: T.Type, name: String) throws -> T {
@@ -189,6 +298,8 @@ final class AppStore: ObservableObject {
 
     func loadDemo() {
         revision += 1; isDemo = true
+        menuQuotaSelection = nil
+        rememberedMenuMetrics = []
         let codex = AccountConfig(provider: .codex, name: "Personal", method: .localFile, location: "")
         let claude = AccountConfig(provider: .claude, name: "Work", method: .localFile, location: "")
         let grok = AccountConfig(provider: .grok, name: "Builder", method: .grokCLI, location: "")
@@ -204,10 +315,11 @@ final class AppStore: ObservableObject {
             grok.id: AccountReading(status: .connected, checkedAt: base, lastSuccessAt: base,
                 windows: [QuotaWindow(id: "week", label: "每周", remainingPercent: 94, resetsAt: base.addingTimeInterval(36000), startsAt: base.addingTimeInterval(-568800))])
         ]
+        rememberMenuChoices(persist: false)
     }
 
     func exitDemo() {
-        revision += 1; isDemo = false; load()
+        revision += 1; isDemo = false; loadMenuPreferences(); load()
     }
 
     // Explicit command-line onboarding for this local installation; never runs in shipped first launch.

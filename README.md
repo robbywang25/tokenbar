@@ -1,14 +1,19 @@
-# TokenBar
+# TokenBar · by Robby
 
 A native macOS menu-bar app for monitoring your AI agent quotas across accounts. Local credentials stay on your Mac; each provider is connected explicitly.
 
 TokenBar 把多个 AI Agent 账号的额度放到 macOS 菜单栏。点击菜单栏图标即可查看剩余比例、重置时间和数据更新时间；应用没有 Dock 图标，也不需要常驻主窗口。
+
+[下载安装包](https://github.com/robbywang25/tokenbar/releases) · [问题反馈](https://github.com/robbywang25/tokenbar/issues) · [MIT 许可证](LICENSE)
+
+这是围绕个人审美与工作流制作的独立实现：紧凑的账号列表，明确的数据时效，以及接入已有额度后台的本地、HTTPS 和 SSH JSON 来源。菜单栏额度工具已有成熟选择，例如 [CodexBar](https://github.com/steipete/CodexBar) 和 [QuotaBar](https://github.com/QuotaBar/QuotaBar)；本项目没有将这些通用能力宣称为独创。它也与 [Arnie016/TokenBar](https://github.com/Arnie016/TokenBar) 这一同名项目无关联。
 
 这是可自行构建的预览版。项目包含独立 `.app`、Universal 二进制、ZIP、DMG 和校验文件的构建脚本；正式公开下载版仍需 Developer ID 签名、公证和发布验收。详见 [发布说明](RELEASE.md)。
 
 ## 能看到什么
 
 - 按账号展示 Codex、Claude Code、Grok Build 和自定义数据源。
+- 菜单栏只显示选中的百分比，例如 `62% · 94%`；在设置里按账号、额度窗口分别开关，选择会保留。失效读数显示 `—`。
 - 显示服务商提供的额度窗口、剩余比例、重置倒计时，以及可用时的 credits 和重置卡数量。
 - 默认每 30 秒刷新，也可手动刷新。数据超过两分钟、时间不可信或额度窗口已重置时，显示过期状态。
 - 启动时载入最近缓存并检查时效；刷新失败时显示网络或登录状态，避免把旧数据当成当前余额。

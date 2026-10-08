@@ -34,6 +34,21 @@ struct AccountConfig: Codable, Identifiable, Equatable {
     var displayService: String { serviceLabel ?? provider.title }
 }
 
+/// Labels only: remembered choices survive a failed quota read without retaining
+/// a percentage that could be mistaken for a current balance.
+struct MenuQuotaMetric: Codable, Identifiable, Equatable {
+    var accountID: UUID
+    var windowID: String
+    var accountName: String
+    var windowLabel: String
+    var group: String
+    var id: String { Self.selectionID(accountID: accountID, windowID: windowID) }
+
+    static func selectionID(accountID: UUID, windowID: String) -> String {
+        accountID.uuidString + "/" + windowID
+    }
+}
+
 enum ReadingStatus: String, Codable {
     case connected, stale, needsAuth, unavailable, notConfigured, unsupported
     var title: String {

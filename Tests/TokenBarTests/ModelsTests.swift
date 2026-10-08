@@ -41,14 +41,23 @@ final class ModelsTests: XCTestCase {
 
     @MainActor func testDemoDoesNotWriteAccountsOrCache() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let store = AppStore(directory: directory, startTimers: false)
+        let suite = "TokenBarModelsTests." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { try? FileManager.default.removeItem(at: directory); defaults.removePersistentDomain(forName: suite) }
+        let store = AppStore(directory: directory, startTimers: false, defaults: defaults)
         store.loadDemo()
         XCTAssertTrue(store.isDemo)
         XCTAssertEqual(store.accounts.count, 3)
+        XCTAssertEqual(store.menuTitle, "32%")
+        let metric = try XCTUnwrap(store.availableMenuMetrics.last)
+        store.setMenuQuota(accountID: metric.accountID, windowID: metric.windowID, enabled: true)
+        XCTAssertEqual(store.menuTitle, "32% · 94%")
+        XCTAssertNil(defaults.object(forKey: "menuQuotaSelection.v1"))
+        XCTAssertNil(defaults.object(forKey: "menuQuotaMetrics.v1"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
         store.exitDemo()
         XCTAssertTrue(store.accounts.isEmpty)
         XCTAssertTrue(store.readings.isEmpty)
+        XCTAssertEqual(store.menuTitle, "—")
     }
 }
