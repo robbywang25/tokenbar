@@ -1,0 +1,32 @@
+name: Build and test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Test provider parsing and quota behavior
+        run: swift test
+      - name: Build universal preview artifacts
+        run: scripts/package-release.sh --universal --no-dmg
+      - name: Verify menu-bar-only app bundle
+        run: |
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' dist/TokenBar.app/Contents/Info.plist)" = true
+          codesign --verify --deep --strict dist/TokenBar.app
+          lipo -verify_arch arm64 x86_64 dist/TokenBar.app/Contents/MacOS/TokenBar
+      - name: Upload local-preview artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: TokenBar-preview
+          path: |
+            dist/*.zip
+            dist/*-SHA256SUMS.txt
+          retention-days: 14
