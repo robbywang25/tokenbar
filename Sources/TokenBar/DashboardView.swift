@@ -416,6 +416,16 @@ struct DashboardView: View {
                 }
                 .labelsHidden().frame(width: 100)
             }
+            VStack(alignment: .leading, spacing: 5) {
+                Toggle("临期提醒", isOn: Binding(
+                    get: { store.expiryAlertsEnabled },
+                    set: { store.setExpiryAlertsEnabled($0) }
+                ))
+                .toggleStyle(.switch).controlSize(.small)
+                Text("余量较多且临近重置时，在菜单栏下方提醒一次。")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Divider()
             menuQuotaSettings
         }
@@ -432,7 +442,7 @@ struct DashboardView: View {
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
             if store.availableMenuMetrics.isEmpty {
-                Text("暂无可显示的百分比额度")
+                Text("暂无可显示的额度")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 ForEach(store.accounts) { account in
@@ -446,8 +456,8 @@ struct DashboardView: View {
                             .lineLimit(1)
                             ForEach(metrics) { metric in
                                 Toggle(metric.windowLabel, isOn: Binding(
-                                    get: { store.menuQuotaSelected(accountID: metric.accountID, windowID: metric.windowID) },
-                                    set: { store.setMenuQuota(accountID: metric.accountID, windowID: metric.windowID, enabled: $0) }
+                                    get: { store.menuMetricSelected(metric) },
+                                    set: { store.setMenuMetric(metric, enabled: $0) }
                                 ))
                                 .font(.system(size: 11)).toggleStyle(.switch).controlSize(.mini)
                                 .accessibilityLabel("\(account.name) · \(metric.windowLabel)，在菜单栏显示")
@@ -461,7 +471,7 @@ struct DashboardView: View {
 
     private var selectedMenuQuotaCount: Int {
         store.availableMenuMetrics.filter {
-            store.menuQuotaSelected(accountID: $0.accountID, windowID: $0.windowID)
+            store.menuMetricSelected($0)
         }.count
     }
 

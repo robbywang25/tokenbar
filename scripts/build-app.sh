@@ -5,8 +5,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="${TOKENBAR_DIST_DIR:-$ROOT_DIR/dist}"
 SIGN_IDENTITY="${TOKENBAR_SIGN_IDENTITY:--}"
-VERSION="${TOKENBAR_VERSION:-0.1.0}"
-BUILD_NUMBER="${TOKENBAR_BUILD_NUMBER:-1}"
+VERSION="${TOKENBAR_VERSION:-0.1.1}"
+BUILD_NUMBER="${TOKENBAR_BUILD_NUMBER:-3}"
 ARCHS=()
 
 usage() {
@@ -17,8 +17,8 @@ The default builds for this Mac and signs ad hoc for local use.
 --universal builds a binary for Apple silicon and Intel Macs.
 
 Optional environment variables:
-  TOKENBAR_VERSION          Marketing version (default: 0.1.0)
-  TOKENBAR_BUILD_NUMBER     Bundle build number (default: 1)
+  TOKENBAR_VERSION          Marketing version (default: 0.1.1)
+  TOKENBAR_BUILD_NUMBER     Bundle build number (default: 3)
   TOKENBAR_DIST_DIR         Output directory (default: ./dist)
   TOKENBAR_SIGN_IDENTITY    Developer ID Application identity; default: -
 

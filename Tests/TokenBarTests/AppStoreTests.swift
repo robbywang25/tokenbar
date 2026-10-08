@@ -4,6 +4,168 @@ import XCTest
 
 final class AppStoreTests: XCTestCase {
     @MainActor
+    func testExpiryNoticesRequireFreshAuthenticatedNearResetSlowPaceWithSubstantialRemaining() throws {
+        let fixture = try StoreFixture()
+        defer { fixture.remove() }
+        let now = Date()
+        let account = AccountConfig(provider: .codex, name: "Fixture", method: .localFile, location: "/fixture/unused.json")
+        let store = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+        store.accounts = [account]
+        let window = QuotaWindow(id: "weekly", label: "每周", remainingPercent: 94, resetsAt: now.addingTimeInterval(3600), startsAt: now.addingTimeInterval(-601_200))
+        let reading = AccountReading(status: .connected, checkedAt: now, lastSuccessAt: now, windows: [window])
+        var variants: [AccountReading] = []
+        var stale = reading; stale.lastSuccessAt = now.addingTimeInterval(-121); variants.append(stale)
+        var unauthenticated = reading; unauthenticated.status = .needsAuth; variants.append(unauthenticated)
+        var little = reading; little.windows[0].remainingPercent = 19; variants.append(little)
+        var unknown = reading; unknown.windows[0].remainingPercent = nil; variants.append(unknown)
+        var distant = reading; distant.windows[0].resetsAt = now.addingTimeInterval(172_800); variants.append(distant)
+        var normalPace = reading
+        normalPace.windows[0].remainingPercent = 50
+        normalPace.windows[0].startsAt = now.addingTimeInterval(-86_400)
+        normalPace.windows[0].resetsAt = now.addingTimeInterval(82_800)
+        variants.append(normalPace)
+        for variant in variants {
+            store.readings[account.id] = variant
+            XCTAssertNil(store.takeNextExpiryNotice(at: now))
+        }
+        store.readings[account.id] = reading
+        store.accounts[0].enabled = false
+        XCTAssertNil(store.takeNextExpiryNotice(at: now))
+        store.accounts[0].enabled = true
+        store.isRefreshing = true
+        XCTAssertNil(store.takeNextExpiryNotice(at: now))
+        store.isRefreshing = false
+        XCTAssertNil(fixture.defaults.object(forKey: "expiryNoticeReceipts.v1"))
+        XCTAssertNotNil(store.takeNextExpiryNotice(at: now))
+    }
+
+    @MainActor
+    func testExpiryNoticeOncePerCycleAcrossRestartDisabledAndUnselectedQuotas() async throws {
+        let fixture = try StoreFixture()
+        defer { fixture.remove() }
+        let now = Date()
+        let reset = now.addingTimeInterval(3600)
+        var account = try fixture.snapshot(name: "Private Fixture Name", accountID: "account-one", windows: [[
+            "id": "weekly", "label": "每周", "remainingPercent": 94,
+            "startsAt": reset.addingTimeInterval(-604_800).timeIntervalSince1970, "resetsAt": reset.timeIntervalSince1970
+        ]])
+        account.serviceLabel = "Codex"
+        let store = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+        try await store.connect(account)
+        XCTAssertTrue(store.expiryAlertsEnabled)
+        store.setMenuQuota(accountID: account.id, windowID: "weekly", enabled: false)
+        XCTAssertEqual(store.menuTitle, "—")
+        let first = try XCTUnwrap(store.takeNextExpiryNotice(at: now))
+        XCTAssertEqual(first.accountName, "Private Fixture Name")
+        XCTAssertEqual(first.serviceLabel, "Codex")
+        XCTAssertEqual(first.windowLabel, "每周")
+        XCTAssertEqual(first.remainingPercent, 94)
+        XCTAssertEqual(first.resetsAt.timeIntervalSince1970, reset.timeIntervalSince1970, accuracy: 0.000001)
+        XCTAssertNil(store.takeNextExpiryNotice(at: now))
+        let data = try XCTUnwrap(fixture.defaults.data(forKey: "expiryNoticeReceipts.v1"))
+        let receipts = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        XCTAssertEqual(receipts.count, 1)
+        XCTAssertEqual(Set(receipts[0].keys), ["id", "resetsAt"])
+        XCTAssertFalse(String(data: data, encoding: .utf8)!.contains("Private Fixture Name"))
+
+        let restored = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+        XCTAssertNil(restored.takeNextExpiryNotice(at: now))
+        restored.setExpiryAlertsEnabled(false)
+        let disabled = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+        XCTAssertFalse(disabled.expiryAlertsEnabled)
+        let nextCycle = now.addingTimeInterval(604_800)
+        restored.readings[account.id]?.lastSuccessAt = nextCycle
+        restored.readings[account.id]?.windows[0].startsAt = nextCycle.addingTimeInterval(-601_200)
+        restored.readings[account.id]?.windows[0].resetsAt = nextCycle.addingTimeInterval(3600)
+        XCTAssertNil(restored.takeNextExpiryNotice(at: nextCycle))
+        restored.setExpiryAlertsEnabled(true)
+        let second = try XCTUnwrap(restored.takeNextExpiryNotice(at: nextCycle))
+        XCTAssertNotEqual(second.id, first.id)
+        XCTAssertNil(restored.takeNextExpiryNotice(at: nextCycle))
+        let newData = try XCTUnwrap(fixture.defaults.data(forKey: "expiryNoticeReceipts.v1"))
+        XCTAssertEqual((try JSONSerialization.jsonObject(with: newData) as? [[String: Any]])?.count, 1)
+    }
+
+    @MainActor
+    func testExpiryNoticePrioritizesEarliestResetAndDemoDoesNotConsumeNotice() throws {
+        let fixture = try StoreFixture()
+        defer { fixture.remove() }
+        let now = Date()
+        let account = AccountConfig(provider: .codex, name: "Fixture", method: .localFile, location: "/fixture/unused.json")
+        let store = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+        store.loadDemo()
+        XCTAssertNil(store.takeNextExpiryNotice(at: now))
+        XCTAssertNil(fixture.defaults.object(forKey: "expiryNoticeReceipts.v1"))
+        store.exitDemo()
+        store.accounts = [account]
+        let later = QuotaWindow(id: "later", label: "较晚", remainingPercent: 94, resetsAt: now.addingTimeInterval(7200), startsAt: now.addingTimeInterval(-597_600))
+        let earlier = QuotaWindow(id: "earlier", label: "较早", remainingPercent: 94, resetsAt: now.addingTimeInterval(1800), startsAt: now.addingTimeInterval(-603_000))
+        store.readings[account.id] = AccountReading(status: .connected, checkedAt: now, lastSuccessAt: now, windows: [later, earlier])
+        XCTAssertEqual(store.takeNextExpiryNotice(at: now)?.windowLabel, "较早")
+        XCTAssertEqual(store.takeNextExpiryNotice(at: now)?.windowLabel, "较晚")
+        XCTAssertNil(store.takeNextExpiryNotice(at: now))
+    }
+
+    @MainActor
+    func testCreditsMenuDefaultsOffPreservesWindowSelectionAndShowsExactTooltip() async throws {
+        let fixture = try StoreFixture()
+        defer { fixture.remove() }
+        let account = try fixture.snapshot(name: "Personal", accountID: "account-one", credits: ["remaining": 44_681.125])
+        let store = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+        try await store.connect(account)
+        let creditMetric = try XCTUnwrap(store.availableMenuMetrics.first(where: { $0.kind == .credits }))
+        XCTAssertEqual(creditMetric.windowLabel, "剩余点数")
+        XCTAssertFalse(store.menuMetricSelected(creditMetric))
+        XCTAssertEqual(store.menuTitle, "37%")
+        store.setMenuMetric(creditMetric, enabled: true)
+        XCTAssertTrue(store.menuQuotaSelected(accountID: account.id, windowID: "weekly"))
+        XCTAssertEqual(store.menuTitle, "37% · 44.7k")
+        XCTAssertTrue(store.menuTooltip.contains("剩余点数：44681.125 点"))
+        let restored = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+        XCTAssertTrue(restored.menuMetricSelected(creditMetric))
+        XCTAssertEqual(restored.menuTitle, "37% · 44.7k")
+        restored.readings[account.id]?.credits = 0
+        XCTAssertEqual(restored.menuTitle, "37% · 0")
+        XCTAssertTrue(restored.menuTooltip.contains("剩余点数：0 点"))
+        restored.readings[account.id]?.unlimitedCredits = true
+        XCTAssertEqual(restored.menuTitle, "37% · ∞")
+        XCTAssertTrue(restored.menuTooltip.contains("剩余点数：不限量"))
+        restored.now = Date().addingTimeInterval(121)
+        XCTAssertEqual(restored.menuTitle, "— · —")
+        XCTAssertTrue(restored.menuTooltip.contains("剩余点数：当前未知"))
+        restored.remove(account)
+        XCTAssertEqual(restored.menuQuotaSelection, [])
+        XCTAssertTrue(restored.availableMenuMetrics.isEmpty)
+        let removed = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+        XCTAssertEqual(removed.menuQuotaSelection, [])
+        XCTAssertEqual(removed.menuTitle, "—")
+    }
+
+    @MainActor
+    func testCreditsOnlyMenuRequiresExplicitSelectionAndSurvivesFailedRead() async throws {
+        let fixture = try StoreFixture()
+        defer { fixture.remove() }
+        let account = try fixture.snapshot(name: "Credits", accountID: "account-one", windows: [], credits: ["remaining": 0])
+        let store = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+        try await store.connect(account)
+        let metric = try XCTUnwrap(store.availableMenuMetrics.first)
+        XCTAssertEqual(metric.kind, .credits)
+        XCTAssertFalse(store.menuMetricSelected(metric))
+        XCTAssertEqual(store.menuTitle, "—")
+        store.setMenuMetric(metric, enabled: true)
+        XCTAssertEqual(store.menuTitle, "0")
+        try Data("invalid JSON fixture".utf8).write(to: URL(fileURLWithPath: account.location))
+        await store.refresh()
+        XCTAssertEqual(store.menuTitle, "—")
+        XCTAssertTrue(store.menuMetricSelected(metric))
+        XCTAssertEqual(store.availableMenuMetrics, [metric])
+        let restored = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+        XCTAssertTrue(restored.menuMetricSelected(metric))
+        XCTAssertEqual(restored.availableMenuMetrics, [metric])
+        XCTAssertEqual(restored.menuTitle, "—")
+    }
+
+    @MainActor
     func testMenuPercentSelectionsPreserveOrderPersistenceAndExplicitEmptyChoice() async throws {
         let fixture = try StoreFixture()
         defer { fixture.remove() }
@@ -281,10 +443,11 @@ private struct StoreFixture {
         try? FileManager.default.removeItem(at: directory)
         defaults.removePersistentDomain(forName: defaultsSuite)
     }
-    func snapshot(name: String, accountID: String, windows: [[String: Any]] = [["id": "weekly", "remainingPercent": 37]]) throws -> AccountConfig {
+    func snapshot(name: String, accountID: String, windows: [[String: Any]] = [["id": "weekly", "remainingPercent": 37]], credits: [String: Any]? = nil) throws -> AccountConfig {
         let file = directory.appendingPathComponent("snapshot-\(UUID().uuidString).json")
-        let object: [String: Any] = ["id": name, "status": "connected", "lastSuccessAt": Date().timeIntervalSince1970,
+        var object: [String: Any] = ["id": name, "status": "connected", "lastSuccessAt": Date().timeIntervalSince1970,
                                     "identity": ["provider": "codex", "accountID": accountID], "windows": windows]
+        if let credits { object["credits"] = credits }
         try JSONSerialization.data(withJSONObject: object).write(to: file)
         return AccountConfig(provider: .snapshot, name: name, method: .snapshotFile, location: file.path)
     }

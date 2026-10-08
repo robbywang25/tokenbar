@@ -34,6 +34,19 @@ struct AccountConfig: Codable, Identifiable, Equatable {
     var displayService: String { serviceLabel ?? provider.title }
 }
 
+enum MenuMetricKind: String, Codable {
+    case credits
+}
+
+struct ExpiryNotice: Identifiable, Equatable {
+    let id: String
+    let accountName: String
+    let serviceLabel: String
+    let windowLabel: String
+    let remainingPercent: Double
+    let resetsAt: Date
+}
+
 /// Labels only: remembered choices survive a failed quota read without retaining
 /// a percentage that could be mistaken for a current balance.
 struct MenuQuotaMetric: Codable, Identifiable, Equatable {
@@ -42,7 +55,11 @@ struct MenuQuotaMetric: Codable, Identifiable, Equatable {
     var accountName: String
     var windowLabel: String
     var group: String
-    var id: String { Self.selectionID(accountID: accountID, windowID: windowID) }
+    // Optional for compatibility with preferences saved before credits selection.
+    var kind: MenuMetricKind? = nil
+    var id: String {
+        kind == .credits ? accountID.uuidString + "#credits" : Self.selectionID(accountID: accountID, windowID: windowID)
+    }
 
     static func selectionID(accountID: UUID, windowID: String) -> String {
         accountID.uuidString + "/" + windowID

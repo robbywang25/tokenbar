@@ -4,6 +4,18 @@ import XCTest
 final class ModelsTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_790_000_000)
 
+    func testLegacyMenuMetricPreferencesDecodeAndCreditsCannotCollideWithWindows() throws {
+        let accountID = UUID()
+        let data = try JSONSerialization.data(withJSONObject: ["accountID": accountID.uuidString, "windowID": "credits", "accountName": "Personal", "windowLabel": "每周", "group": "default"])
+        let legacy = try JSONDecoder().decode(MenuQuotaMetric.self, from: data)
+        XCTAssertNil(legacy.kind)
+        XCTAssertEqual(legacy.id, accountID.uuidString + "/credits")
+        let credits = MenuQuotaMetric(accountID: accountID, windowID: "", accountName: "Personal", windowLabel: "剩余点数", group: "credits", kind: .credits)
+        XCTAssertNotEqual(credits.id, legacy.id)
+        XCTAssertNotEqual(credits.id, MenuQuotaMetric.selectionID(accountID: accountID, windowID: "#credits"))
+        XCTAssertEqual(try JSONDecoder().decode(MenuQuotaMetric.self, from: JSONEncoder().encode(credits)), credits)
+    }
+
     func testFreshnessNeverPromotesExpiredOrFutureReadings() {
         var reading = AccountReading(status: .connected, checkedAt: now, lastSuccessAt: now)
         XCTAssertTrue(reading.isFresh(at: now))

@@ -17,12 +17,20 @@ final class AppStore: ObservableObject {
     // nil preserves the initial one-metric default; [] is an explicit opt-out.
     @Published private(set) var menuQuotaSelection: Set<String>?
     @Published private(set) var rememberedMenuMetrics: [MenuQuotaMetric] = []
+    @Published private(set) var expiryAlertsEnabled = true
 
     private let client: ProviderClient
     private let directory: URL
     private let defaults: UserDefaults
     private static let menuSelectionKey = "menuQuotaSelection.v1"
     private static let menuMetricsKey = "menuQuotaMetrics.v1"
+    private static let expiryEnabledKey = "expiryAlertsEnabled.v1"
+    private static let expiryReceiptsKey = "expiryNoticeReceipts.v1"
+    private struct ExpiryReceipt: Codable {
+        let id: String
+        let resetsAt: Date
+    }
+    private var expiryReceipts: [ExpiryReceipt] = []
     private var clock: Timer?
     private var poll: Timer?
     private var revision = 0
@@ -34,6 +42,7 @@ final class AppStore: ObservableObject {
         self.defaults = defaults
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("TokenBar")
         loadMenuPreferences()
+        loadExpiryPreferences()
         load()
         let saved = defaults.double(forKey: "refreshSeconds")
         if [30.0, 60, 120].contains(saved) { refreshSeconds = saved }
@@ -56,20 +65,92 @@ final class AppStore: ObservableObject {
         return values.isEmpty ? "—" : values.joined(separator: " · ")
     }
 
+    func setExpiryAlertsEnabled(_ enabled: Bool) {
+        expiryAlertsEnabled = enabled
+        if !isDemo { defaults.set(enabled, forKey: Self.expiryEnabledKey) }
+    }
+
+    /// The delegate calls this only when it can show a notice and the popover is
+    /// closed. Consuming a notice records its account/window/reset cycle once.
+    func takeNextExpiryNotice(at date: Date? = nil) -> ExpiryNotice? {
+        guard expiryAlertsEnabled, !isDemo, !isRefreshing else { return nil }
+        let date = date ?? Date()
+        pruneExpiryReceipts(at: date)
+        // Do not evict live receipts: exceeding the bound must never repeat a
+        // notice already shown for a still-active reset cycle.
+        guard expiryReceipts.count < 100 else { return nil }
+        let seen = Set(expiryReceipts.map(\.id))
+        var candidates: [ExpiryNotice] = []
+        for account in accounts where account.enabled {
+            guard let reading = readings[account.id], reading.isFresh(at: date) else { continue }
+            for window in reading.windows {
+                guard !window.unlimited, window.alert(at: date) == "即将重置",
+                      let remaining = window.remainingPercent, remaining.isFinite, (0...100).contains(remaining),
+                      let reset = window.resetsAt else { continue }
+                let id = account.id.uuidString + "/" + window.id + "@" + String(reset.timeIntervalSince1970)
+                guard !seen.contains(id) else { continue }
+                candidates.append(ExpiryNotice(id: id, accountName: account.name, serviceLabel: account.displayService,
+                    windowLabel: window.title + (window.model.map { " · " + $0 } ?? ""), remainingPercent: remaining, resetsAt: reset))
+            }
+        }
+        let notice = candidates.enumerated().min { first, second in
+            first.element.resetsAt == second.element.resetsAt ? first.offset < second.offset : first.element.resetsAt < second.element.resetsAt
+        }?.element
+        guard let notice else { return nil }
+        expiryReceipts.append(ExpiryReceipt(id: notice.id, resetsAt: notice.resetsAt))
+        persistExpiryReceipts()
+        return notice
+    }
+
+    private func loadExpiryPreferences() {
+        expiryAlertsEnabled = defaults.object(forKey: Self.expiryEnabledKey) == nil ? true : defaults.bool(forKey: Self.expiryEnabledKey)
+        if let data = defaults.data(forKey: Self.expiryReceiptsKey), data.count <= 65_536,
+           let receipts = try? JSONDecoder().decode([ExpiryReceipt].self, from: data), receipts.count <= 100 {
+            expiryReceipts = receipts
+        } else { expiryReceipts = [] }
+    }
+
+    private func pruneExpiryReceipts(at date: Date) {
+        let prefixes = accounts.map { $0.id.uuidString + "/" }
+        let retained = expiryReceipts.filter { receipt in
+            receipt.resetsAt > date && prefixes.contains(where: receipt.id.hasPrefix)
+        }
+        if retained.count != expiryReceipts.count {
+            expiryReceipts = retained
+            persistExpiryReceipts()
+        }
+    }
+
+    private func persistExpiryReceipts() {
+        guard !isDemo else { return }
+        if let data = try? JSONEncoder().encode(expiryReceipts) { defaults.set(data, forKey: Self.expiryReceiptsKey) }
+    }
+
     var menuTooltip: String {
         let metrics = selectedMenuMetrics
         guard !metrics.isEmpty else { return "未选择菜单栏额度" }
         return metrics.map { metric in
             let value = menuValue(metric)
-            return "\(metric.accountName) · \(metric.windowLabel)：\(value == "—" ? "当前未知" : value)"
+            let detail: String
+            if value == "—" { detail = "当前未知" }
+            else if metric.kind == .credits, let reading = readings[metric.accountID] {
+                if reading.unlimitedCredits { detail = "不限量" }
+                else if let credits = reading.credits { detail = Self.exactCredits(credits) + " 点" }
+                else { detail = "当前未知" }
+            } else { detail = value }
+            return "\(metric.accountName) · \(metric.windowLabel)：\(detail)"
         }.joined(separator: "\n")
     }
 
     var availableMenuMetrics: [MenuQuotaMetric] {
         accounts.flatMap { account -> [MenuQuotaMetric] in
-            let current = (readings[account.id]?.windows ?? []).filter { $0.remainingPercent != nil }.map { window in
+            var current = (readings[account.id]?.windows ?? []).filter { $0.remainingPercent != nil }.map { window in
                 MenuQuotaMetric(accountID: account.id, windowID: window.id, accountName: account.name,
                                 windowLabel: window.title + (window.model.map { " · " + $0 } ?? ""), group: window.group)
+            }
+            if let reading = readings[account.id], reading.credits != nil || reading.unlimitedCredits {
+                current.append(MenuQuotaMetric(accountID: account.id, windowID: "", accountName: account.name,
+                                               windowLabel: "剩余点数", group: "credits", kind: .credits))
             }
             let currentIDs = Set(current.map(\.id))
             let previous = rememberedMenuMetrics.filter { $0.accountID == account.id && !currentIDs.contains($0.id) }.map { metric in
@@ -86,7 +167,16 @@ final class AppStore: ObservableObject {
     }
 
     func setMenuQuota(accountID: UUID, windowID: String, enabled: Bool) {
-        let id = MenuQuotaMetric.selectionID(accountID: accountID, windowID: windowID)
+        guard let metric = availableMenuMetrics.first(where: { $0.kind != .credits && $0.accountID == accountID && $0.windowID == windowID }) else { return }
+        setMenuMetric(metric, enabled: enabled)
+    }
+
+    func menuMetricSelected(_ metric: MenuQuotaMetric) -> Bool {
+        effectiveMenuSelection.contains(metric.id)
+    }
+
+    func setMenuMetric(_ metric: MenuQuotaMetric, enabled: Bool) {
+        let id = metric.id
         guard availableMenuMetrics.contains(where: { $0.id == id }) else { return }
         var selection = effectiveMenuSelection
         if enabled { selection.insert(id) } else { selection.remove(id) }
@@ -97,7 +187,7 @@ final class AppStore: ObservableObject {
     private var effectiveMenuSelection: Set<String> {
         if let menuQuotaSelection { return menuQuotaSelection }
         guard let metric = availableMenuMetrics.first(where: { metric in
-            metric.group == "default" && accounts.contains(where: { $0.id == metric.accountID && $0.enabled })
+            metric.kind != .credits && metric.group == "default" && accounts.contains(where: { $0.id == metric.accountID && $0.enabled })
         }) else { return [] }
         return [metric.id]
     }
@@ -109,16 +199,36 @@ final class AppStore: ObservableObject {
 
     private func menuValue(_ metric: MenuQuotaMetric) -> String {
         guard accounts.contains(where: { $0.id == metric.accountID && $0.enabled }),
-              let reading = readings[metric.accountID], reading.isFresh(at: now),
-              let percent = reading.windows.first(where: { $0.id == metric.windowID })?.remainingPercent,
+              let reading = readings[metric.accountID], reading.isFresh(at: now) else { return "—" }
+        if metric.kind == .credits {
+            if reading.unlimitedCredits { return "∞" }
+            guard let credits = reading.credits, credits.isFinite, credits >= 0 else { return "—" }
+            return Self.compactCredits(credits)
+        }
+        guard let percent = reading.windows.first(where: { $0.id == metric.windowID })?.remainingPercent,
               percent.isFinite, (0...100).contains(percent) else { return "—" }
         return "\(Int(percent.rounded()))%"
+    }
+
+    private static func exactCredits(_ value: Double) -> String {
+        let text = String(value)
+        return text.hasSuffix(".0") ? String(text.dropLast(2)) : text
+    }
+
+    private static func compactCredits(_ value: Double) -> String {
+        let divisor: Double
+        let suffix: String
+        if value >= 999_950 { divisor = 1_000_000; suffix = "m" }
+        else if value >= 1_000 { divisor = 1_000; suffix = "k" }
+        else { return exactCredits(value) }
+        let text = String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), value / divisor)
+        return (text.hasSuffix(".0") ? String(text.dropLast(2)) : text) + suffix
     }
 
     private func loadMenuPreferences() {
         menuQuotaSelection = defaults.stringArray(forKey: Self.menuSelectionKey).map(Set.init)
         if let data = defaults.data(forKey: Self.menuMetricsKey), data.count <= 1_048_576,
-           let metrics = try? JSONDecoder().decode([MenuQuotaMetric].self, from: data), metrics.count <= 1_920 {
+           let metrics = try? JSONDecoder().decode([MenuQuotaMetric].self, from: data), metrics.count <= 1_950 {
             rememberedMenuMetrics = metrics
         } else { rememberedMenuMetrics = [] }
     }
@@ -126,8 +236,8 @@ final class AppStore: ObservableObject {
     private func rememberMenuChoices(persist: Bool = true) {
         rememberedMenuMetrics = availableMenuMetrics
         if let selection = menuQuotaSelection {
-            let prefixes = accounts.map { $0.id.uuidString + "/" }
-            menuQuotaSelection = selection.filter { id in prefixes.contains(where: id.hasPrefix) }
+            let accountIDs = accounts.map { $0.id.uuidString }
+            menuQuotaSelection = selection.filter { id in accountIDs.contains(where: { id.hasPrefix($0 + "/") || id == $0 + "#credits" }) }
         }
         guard persist, !isDemo else { return }
         if let menuQuotaSelection { defaults.set(menuQuotaSelection.sorted(), forKey: Self.menuSelectionKey) }
@@ -231,6 +341,7 @@ final class AppStore: ObservableObject {
             rememberMenuChoices()
             if !isDemo {
                 if config.method == .snapshotURL { CredentialStore.delete(account: config.id.uuidString) }
+                pruneExpiryReceipts(at: Date())
                 persistReadings()
             }
         } catch { errorMessage = "无法保存账号变更，请检查本机存储权限。" }
@@ -319,7 +430,7 @@ final class AppStore: ObservableObject {
     }
 
     func exitDemo() {
-        revision += 1; isDemo = false; loadMenuPreferences(); load()
+        revision += 1; isDemo = false; loadMenuPreferences(); loadExpiryPreferences(); load()
     }
 
     // Explicit command-line onboarding for this local installation; never runs in shipped first launch.
