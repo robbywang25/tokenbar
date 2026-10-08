@@ -78,6 +78,7 @@ else
 fi
 chmod 755 "$STAGED_APP/Contents/MacOS/TokenBar"
 cp "$ROOT_DIR/Resources/Info.plist" "$STAGED_APP/Contents/Info.plist"
+cp "$ROOT_DIR/LICENSE" "$STAGED_APP/Contents/Resources/LICENSE"
 swift "$ROOT_DIR/scripts/generate-icon.swift" "$STAGE_DIR/TokenBar.iconset"
 iconutil -c icns "$STAGE_DIR/TokenBar.iconset" -o "$STAGED_APP/Contents/Resources/TokenBar.icns"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$STAGED_APP/Contents/Info.plist"
