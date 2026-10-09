@@ -32,6 +32,58 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(reading.displayStatus(at: now), .needsAuth)
     }
 
+    func testReserveIsHiddenWithoutChangingRawWindowsCreditsCardsOrEncoding() throws {
+        let windows = [
+            QuotaWindow(id: "default", label: "每周", remainingPercent: 35),
+            QuotaWindow(id: "reserve", label: "每周", remainingPercent: 100, group: "reserve", model: "Luna"),
+            QuotaWindow(id: "review", label: "每周", remainingPercent: 75, group: "code-review"),
+            QuotaWindow(id: "extra", label: "5 小时", remainingPercent: 90, group: "additional")
+        ]
+        var reading = AccountReading(status: .connected, checkedAt: now, lastSuccessAt: now, windows: windows,
+            credits: 123.5, resetCardsAvailable: 0, resetCards: [ResetCard(status: "available", expiresAt: now.addingTimeInterval(3600))])
+        XCTAssertEqual(reading.visibleWindows.map(\.id), ["default", "review", "extra"])
+        XCTAssertEqual(reading.windows, windows)
+        XCTAssertEqual(try JSONDecoder().decode(AccountReading.self, from: JSONEncoder().encode(reading)), reading)
+        reading.windows = [windows[1]]
+        XCTAssertTrue(reading.visibleWindows.isEmpty)
+        XCTAssertTrue(reading.hasVisibleSupplementalQuota)
+        XCTAssertTrue(reading.hasVisibleQuota)
+        XCTAssertEqual(reading.credits, 123.5)
+        XCTAssertEqual(reading.resetCardsAvailable, 0)
+        reading.credits = nil; reading.resetCardsAvailable = nil
+        XCTAssertFalse(reading.hasVisibleQuota)
+        reading.unlimitedCredits = true
+        XCTAssertTrue(reading.hasVisibleQuota)
+    }
+
+    func testExpiredReserveDoesNotExpireVisibleQuotasOrChangeExplicitSourceStatus() {
+        let primary = QuotaWindow(id: "weekly", label: "每周", remainingPercent: 42, resetsAt: now.addingTimeInterval(3600))
+        let reserve = QuotaWindow(id: "reserve", label: "每周", remainingPercent: 100, resetsAt: now, group: "reserve")
+        var reading = AccountReading(status: .connected, checkedAt: now, lastSuccessAt: now, windows: [primary, reserve], credits: 100)
+        XCTAssertTrue(reading.isFresh(at: now))
+        XCTAssertEqual(reading.displayStatus(at: now), .connected)
+        XCTAssertEqual(reading.windows[1].resetsAt, now)
+        reading.windows[0].resetsAt = now
+        XCTAssertFalse(reading.isFresh(at: now))
+        reading.windows = [reserve]
+        XCTAssertTrue(reading.isFresh(at: now))
+        for status: ReadingStatus in [.stale, .needsAuth, .unavailable, .notConfigured, .unsupported] {
+            reading.status = status
+            XCTAssertFalse(reading.isFresh(at: now))
+            XCTAssertEqual(reading.displayStatus(at: now), status)
+        }
+        reading.status = .connected; reading.lastSuccessAt = now.addingTimeInterval(-121)
+        XCTAssertFalse(reading.isFresh(at: now))
+    }
+
+    func testReserveCannotProducePacingOrResetAlert() {
+        let reserve = QuotaWindow(id: "reserve", label: "每周", remainingPercent: 94,
+            resetsAt: now.addingTimeInterval(3600), startsAt: now.addingTimeInterval(-601200), group: "reserve")
+        XCTAssertNil(reserve.alert(at: now))
+        var primary = reserve; primary.group = "default"
+        XCTAssertEqual(primary.alert(at: now), "即将重置")
+    }
+
     func testUnknownAndZeroAreDistinct() {
         let unknown = QuotaWindow(id: "a", label: "额度", remainingPercent: nil)
         let zero = QuotaWindow(id: "b", label: "额度", remainingPercent: 0)

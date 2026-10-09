@@ -57,6 +57,7 @@ struct MenuQuotaMetric: Codable, Identifiable, Equatable {
     var group: String
     // Optional for compatibility with preferences saved before credits selection.
     var kind: MenuMetricKind? = nil
+    var isVisibleInUI: Bool { group != "reserve" }
     var id: String {
         kind == .credits ? accountID.uuidString + "#credits" : Self.selectionID(accountID: accountID, windowID: windowID)
     }
@@ -85,6 +86,8 @@ struct QuotaWindow: Codable, Identifiable, Equatable {
     var group: String = "default"
     var model: String? = nil
     var unlimited: Bool = false
+    // Preserve Reserve in the source/cache while excluding it from presentation.
+    var isVisibleInUI: Bool { group != "reserve" }
     var title: String {
         let prefix = group == "reserve" ? "Reserve" : group == "code-review" ? "代码审查" : group == "additional" ? "附加" : ""
         return prefix.isEmpty ? label : "\(prefix) · \(label)"
@@ -96,7 +99,7 @@ struct QuotaWindow: Codable, Identifiable, Equatable {
         return "未提供"
     }
     func alert(at now: Date) -> String? {
-        guard let start = startsAt, let reset = resetsAt, reset > now, let percent = remainingPercent else { return nil }
+        guard isVisibleInUI, let start = startsAt, let reset = resetsAt, reset > now, let percent = remainingPercent else { return nil }
         let duration = reset.timeIntervalSince(start), elapsed = now.timeIntervalSince(start)
         guard duration >= 86400, elapsed >= min(86400, duration / 4), elapsed >= 0,
               100 - percent < elapsed / duration * 100 - 10 else { return nil }
@@ -124,10 +127,14 @@ struct AccountReading: Codable, Equatable {
     // Hash only; used to reject duplicate identities. Never persist a credential.
     var identityKey: String? = nil
 
+    var visibleWindows: [QuotaWindow] { windows.filter(\.isVisibleInUI) }
+    var hasVisibleSupplementalQuota: Bool { credits != nil || unlimitedCredits || resetCardsAvailable != nil }
+    var hasVisibleQuota: Bool { !visibleWindows.isEmpty || hasVisibleSupplementalQuota }
+
     func isFresh(at now: Date, maxAge: TimeInterval = 120) -> Bool {
         guard status == .connected, let success = lastSuccessAt,
               success <= now.addingTimeInterval(60), now.timeIntervalSince(success) <= maxAge else { return false }
-        return !windows.contains { ($0.resetsAt ?? .distantFuture) <= now }
+        return !visibleWindows.contains { ($0.resetsAt ?? .distantFuture) <= now }
     }
     func displayStatus(at now: Date) -> ReadingStatus {
         status == .connected && !isFresh(at: now) ? .stale : status

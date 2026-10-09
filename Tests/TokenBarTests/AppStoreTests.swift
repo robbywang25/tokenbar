@@ -179,12 +179,14 @@ final class AppStoreTests: XCTestCase {
         try await store.connect(second)
         XCTAssertNil(store.menuQuotaSelection)
         XCTAssertEqual(store.menuTitle, "0%")
-        XCTAssertEqual(store.availableMenuMetrics.count, 3)
+        XCTAssertEqual(store.availableMenuMetrics.count, 2)
         XCTAssertTrue(store.menuQuotaSelected(accountID: first.id, windowID: "weekly"))
         store.setMenuQuota(accountID: second.id, windowID: "weekly", enabled: true)
         store.setMenuQuota(accountID: first.id, windowID: "reserve", enabled: true)
-        XCTAssertEqual(store.menuTitle, "0% · 100% · 94%")
-        XCTAssertTrue(store.menuTooltip.contains("Personal · Reserve · 每周 · example-model：100%"))
+        XCTAssertEqual(store.menuTitle, "0% · 94%")
+        XCTAssertFalse(store.menuTooltip.contains("Reserve"))
+        XCTAssertFalse(store.menuQuotaSelected(accountID: first.id, windowID: "reserve"))
+        XCTAssertEqual(store.readings[first.id]?.windows.map(\.group), ["default", "reserve"])
         XCTAssertTrue(store.menuTooltip.contains("Work"))
         XCTAssertFalse(store.menuTitle.contains("TokenBar"))
         let restored = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
@@ -199,6 +201,143 @@ final class AppStoreTests: XCTestCase {
         let emptyRestored = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
         XCTAssertEqual(emptyRestored.menuQuotaSelection, [])
         XCTAssertEqual(emptyRestored.menuTitle, "—")
+    }
+
+    @MainActor
+    func testLegacyReserveSelectionStaysSavedButHiddenAcrossRestartFailureAndVisibleEdits() async throws {
+        let fixture = try StoreFixture()
+        defer { fixture.remove() }
+        let account = try fixture.snapshot(name: "Personal", accountID: "one", windows: [
+            ["id": "weekly", "remainingPercent": 42],
+            ["id": "reserve", "remainingPercent": 100, "quotaGroup": "reserve"]
+        ], credits: ["remaining": 123.5])
+        let original = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+        try await original.connect(account)
+        let reserveID = MenuQuotaMetric.selectionID(accountID: account.id, windowID: "reserve")
+        fixture.defaults.set([reserveID], forKey: "menuQuotaSelection.v1")
+        // Simulates a selection saved by a version which exposed Reserve.
+        let restored = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+        XCTAssertEqual(restored.accounts, [account])
+        XCTAssertEqual(restored.menuQuotaSelection, [reserveID])
+        XCTAssertEqual(restored.menuTitle, "—")
+        XCTAssertEqual(restored.menuTooltip, "未选择菜单栏额度")
+        XCTAssertFalse(restored.availableMenuMetrics.contains { $0.group == "reserve" })
+        XCTAssertTrue(restored.rememberedMenuMetrics.contains { $0.id == reserveID && $0.group == "reserve" })
+        restored.setMenuQuota(accountID: account.id, windowID: "weekly", enabled: true)
+        XCTAssertEqual(restored.menuTitle, "42%")
+        XCTAssertTrue(restored.menuQuotaSelection?.contains(reserveID) == true)
+        let credit = try XCTUnwrap(restored.availableMenuMetrics.first { $0.kind == .credits })
+        restored.setMenuMetric(credit, enabled: true)
+        XCTAssertEqual(restored.menuTitle, "42% · 123.5")
+        let selected = try XCTUnwrap(restored.menuQuotaSelection)
+        try Data("invalid fixture".utf8).write(to: URL(fileURLWithPath: account.location))
+        await restored.refresh()
+        XCTAssertEqual(restored.menuTitle, "— · —")
+        XCTAssertFalse(restored.menuTooltip.contains("Reserve"))
+        XCTAssertEqual(restored.menuQuotaSelection, selected)
+        let afterFailure = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+        XCTAssertEqual(afterFailure.accounts.map(\.id), [account.id])
+        XCTAssertEqual(afterFailure.menuQuotaSelection, selected)
+        XCTAssertEqual(afterFailure.menuTitle, "— · —")
+        XCTAssertFalse(afterFailure.availableMenuMetrics.contains { $0.group == "reserve" })
+        XCTAssertTrue(afterFailure.rememberedMenuMetrics.contains { $0.id == reserveID && $0.group == "reserve" })
+        XCTAssertEqual(Set(fixture.defaults.stringArray(forKey: "menuQuotaSelection.v1") ?? []), selected)
+    }
+
+    @MainActor
+    func testSameWindowChangingToReserveCannotReviveItsRememberedDefaultLabel() async throws {
+        for hasPercentage in [true, false] {
+            let fixture = try StoreFixture()
+            defer { fixture.remove() }
+            let account = try fixture.snapshot(name: "Personal", accountID: "one", windows: [["id": "stable-window", "remainingPercent": 37]])
+            let store = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+            try await store.connect(account)
+            store.setMenuQuota(accountID: account.id, windowID: "stable-window", enabled: true)
+            let selection = store.menuQuotaSelection
+            var window: [String: Any] = ["id": "stable-window", "label": "每周", "quotaGroup": "reserve"]
+            if hasPercentage { window["remainingPercent"] = 100 }
+            else { window["remaining"] = 20; window["unit"] = "tokens" }
+            let file = URL(fileURLWithPath: account.location)
+            var source = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+            source["windows"] = [window]
+            try JSONSerialization.data(withJSONObject: source).write(to: file)
+            await store.refresh()
+            XCTAssertEqual(store.readings[account.id]?.windows.first?.group, "reserve")
+            XCTAssertTrue(store.availableMenuMetrics.isEmpty)
+            XCTAssertEqual(store.menuTitle, "—")
+            XCTAssertEqual(store.menuQuotaSelection, selection)
+            XCTAssertEqual(store.rememberedMenuMetrics.first?.group, "reserve")
+            let restored = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+            XCTAssertEqual(restored.accounts.map(\.id), [account.id])
+            XCTAssertEqual(restored.menuQuotaSelection, selection)
+            XCTAssertTrue(restored.availableMenuMetrics.isEmpty)
+            try Data("invalid fixture".utf8).write(to: file)
+            await restored.refresh()
+            XCTAssertTrue(restored.availableMenuMetrics.isEmpty)
+            XCTAssertEqual(restored.rememberedMenuMetrics.first?.group, "reserve")
+            XCTAssertEqual(restored.menuTooltip, "未选择菜单栏额度")
+        }
+    }
+
+    @MainActor
+    func testHiddenReserveDoesNotBecomeDefaultOrUndoExplicitEmptySelection() async throws {
+        let fixture = try StoreFixture()
+        defer { fixture.remove() }
+        let account = try fixture.snapshot(name: "Reserve only", accountID: "one", windows: [["id": "reserve", "remainingPercent": 100, "quotaGroup": "reserve"]])
+        let store = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+        try await store.connect(account)
+        XCTAssertNil(store.menuQuotaSelection)
+        XCTAssertEqual(store.menuTitle, "—")
+        XCTAssertTrue(store.availableMenuMetrics.isEmpty)
+        fixture.defaults.set([String](), forKey: "menuQuotaSelection.v1")
+        let empty = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+        let other = try fixture.snapshot(name: "Visible", accountID: "two")
+        try await empty.connect(other)
+        XCTAssertEqual(empty.menuQuotaSelection, [])
+        XCTAssertEqual(empty.menuTitle, "—")
+        XCTAssertEqual(empty.accounts.map(\.id), [account.id, other.id])
+    }
+
+    @MainActor
+    func testExpiredReserveCannotBlankWeeklyAndCreditsMenuValues() async throws {
+        let fixture = try StoreFixture()
+        defer { fixture.remove() }
+        let now = Date()
+        let account = try fixture.snapshot(name: "Personal", accountID: "one", windows: [
+            ["id": "weekly", "remainingPercent": 42, "resetsAt": now.addingTimeInterval(3600).timeIntervalSince1970],
+            ["id": "reserve", "remainingPercent": 100, "quotaGroup": "reserve", "resetsAt": now.addingTimeInterval(-1).timeIntervalSince1970]
+        ], credits: ["remaining": 56_000])
+        let store = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+        try await store.connect(account)
+        store.setMenuMetric(try XCTUnwrap(store.availableMenuMetrics.first { $0.kind == .credits }), enabled: true)
+        XCTAssertEqual(store.menuTitle, "42% · 56k")
+        XCTAssertTrue(store.menuTooltip.contains("56000 点"))
+        XCTAssertEqual(store.readings[account.id]?.windows.count, 2)
+        store.readings[account.id]?.status = .stale
+        XCTAssertEqual(store.menuTitle, "— · —")
+    }
+
+    @MainActor
+    func testReserveCannotConsumeOrPrioritizeExpiryNotice() throws {
+        let fixture = try StoreFixture()
+        defer { fixture.remove() }
+        let now = Date()
+        let account = AccountConfig(provider: .codex, name: "Fixture", method: .localFile, location: "/fixture/unused.json")
+        let store = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+        store.accounts = [account]
+        let reserve = QuotaWindow(id: "reserve", label: "每周", remainingPercent: 100,
+            resetsAt: now.addingTimeInterval(60), startsAt: now.addingTimeInterval(-604_740), group: "reserve")
+        store.readings[account.id] = AccountReading(status: .connected, checkedAt: now, lastSuccessAt: now, windows: [reserve])
+        XCTAssertNil(store.takeNextExpiryNotice(at: now))
+        XCTAssertNil(fixture.defaults.object(forKey: "expiryNoticeReceipts.v1"))
+        let weekly = QuotaWindow(id: "weekly", label: "每周", remainingPercent: 94,
+            resetsAt: now.addingTimeInterval(3600), startsAt: now.addingTimeInterval(-601_200))
+        store.readings[account.id]?.windows.append(weekly)
+        let notice = try XCTUnwrap(store.takeNextExpiryNotice(at: now))
+        XCTAssertTrue(notice.id.contains("/weekly@"))
+        XCTAssertEqual(notice.remainingPercent, 94)
+        XCTAssertNil(store.takeNextExpiryNotice(at: now))
+        XCTAssertEqual(store.readings[account.id]?.windows.map(\.group), ["reserve", "default"])
     }
 
     @MainActor

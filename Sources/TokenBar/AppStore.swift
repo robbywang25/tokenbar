@@ -83,7 +83,7 @@ final class AppStore: ObservableObject {
         var candidates: [ExpiryNotice] = []
         for account in accounts where account.enabled {
             guard let reading = readings[account.id], reading.isFresh(at: date) else { continue }
-            for window in reading.windows {
+            for window in reading.visibleWindows {
                 guard !window.unlimited, window.alert(at: date) == "即将重置",
                       let remaining = window.remainingPercent, remaining.isFinite, (0...100).contains(remaining),
                       let reset = window.resetsAt else { continue }
@@ -143,8 +143,15 @@ final class AppStore: ObservableObject {
     }
 
     var availableMenuMetrics: [MenuQuotaMetric] {
+        menuMetricCatalog.filter(\.isVisibleInUI)
+    }
+
+    // Keep the complete label catalog and stored selection IDs, including
+    // hidden metrics. Presentation filtering must not rewrite user choices.
+    private var menuMetricCatalog: [MenuQuotaMetric] {
         accounts.flatMap { account -> [MenuQuotaMetric] in
-            var current = (readings[account.id]?.windows ?? []).filter { $0.remainingPercent != nil }.map { window in
+            let windows = readings[account.id]?.windows ?? []
+            var current = windows.filter { $0.remainingPercent != nil }.map { window in
                 MenuQuotaMetric(accountID: account.id, windowID: window.id, accountName: account.name,
                                 windowLabel: window.title + (window.model.map { " · " + $0 } ?? ""), group: window.group)
             }
@@ -156,6 +163,12 @@ final class AppStore: ObservableObject {
             let previous = rememberedMenuMetrics.filter { $0.accountID == account.id && !currentIDs.contains($0.id) }.map { metric in
                 var metric = metric
                 metric.accountName = account.name
+                // An existing window may change group or stop providing a
+                // percentage. Its old default label must not revive Reserve.
+                if metric.kind != .credits, let window = windows.first(where: { $0.id == metric.windowID }) {
+                    metric.group = window.group
+                    metric.windowLabel = window.title + (window.model.map { " · " + $0 } ?? "")
+                }
                 return metric
             }
             return current + previous
@@ -205,7 +218,7 @@ final class AppStore: ObservableObject {
             guard let credits = reading.credits, credits.isFinite, credits >= 0 else { return "—" }
             return Self.compactCredits(credits)
         }
-        guard let percent = reading.windows.first(where: { $0.id == metric.windowID })?.remainingPercent,
+        guard let percent = reading.visibleWindows.first(where: { $0.id == metric.windowID })?.remainingPercent,
               percent.isFinite, (0...100).contains(percent) else { return "—" }
         return "\(Int(percent.rounded()))%"
     }
@@ -234,7 +247,7 @@ final class AppStore: ObservableObject {
     }
 
     private func rememberMenuChoices(persist: Bool = true) {
-        rememberedMenuMetrics = availableMenuMetrics
+        rememberedMenuMetrics = menuMetricCatalog
         if let selection = menuQuotaSelection {
             let accountIDs = accounts.map { $0.id.uuidString }
             menuQuotaSelection = selection.filter { id in accountIDs.contains(where: { id.hasPrefix($0 + "/") || id == $0 + "#credits" }) }

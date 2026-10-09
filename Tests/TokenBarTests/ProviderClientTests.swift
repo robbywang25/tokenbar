@@ -86,6 +86,26 @@ final class ProviderClientTests: XCTestCase {
         XCTAssertEqual(try ProviderClient.parseSnapshot(data, at: now).status, .stale)
     }
 
+    func testSnapshotRetainsReserveButItsResetDoesNotExpireVisibleQuota() throws {
+        let windows: [[String: Any]] = [
+            ["id": "weekly", "remainingPercent": 42, "resetsAt": now.addingTimeInterval(3600).timeIntervalSince1970],
+            ["id": "reserve", "remainingPercent": 100, "quotaGroup": "reserve", "resetsAt": now.addingTimeInterval(-1).timeIntervalSince1970]
+        ]
+        for sourceStatus in ["connected", "stale"] {
+            let data = try json(["id": "one", "status": sourceStatus, "lastSuccessAt": now.timeIntervalSince1970,
+                                 "windows": windows, "credits": ["remaining": 56_000], "resetCredits": ["available": 3]])
+            let reading = try ProviderClient.parseSnapshot(data, at: now)
+            XCTAssertEqual(reading.status, sourceStatus == "connected" ? .connected : .stale)
+            XCTAssertEqual(reading.isFresh(at: now), sourceStatus == "connected")
+            XCTAssertEqual(reading.windows.map(\.group), ["default", "reserve"])
+            XCTAssertEqual(reading.visibleWindows.map(\.id), ["weekly"])
+            XCTAssertEqual(reading.windows[1].remainingPercent, 100)
+            XCTAssertEqual(reading.lastSuccessAt, now)
+            XCTAssertEqual(reading.credits, 56_000)
+            XCTAssertEqual(reading.resetCardsAvailable, 3)
+        }
+    }
+
     func testSnapshotMultipleAccountsRequireExactUnambiguousSelector() throws {
         let account: [String: Any] = ["id": "one", "status": "connected", "windows": [["remainingPercent": 40]]]
         let another: [String: Any] = ["id": "two", "status": "needs_auth"]

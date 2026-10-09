@@ -151,12 +151,12 @@ struct DashboardView: View {
 
             if let reading {
                 if expanded {
-                    if reading.windows.isEmpty {
-                        Text(fresh ? "来源未提供窗口额度" : "当前未知")
+                    if reading.visibleWindows.isEmpty && !reading.hasVisibleSupplementalQuota {
+                        Text(fresh ? "暂无可显示额度" : "当前未知")
                             .font(.subheadline).foregroundStyle(.secondary)
-                    } else {
+                    } else if !reading.visibleWindows.isEmpty {
                         VStack(spacing: 12) {
-                            ForEach(reading.windows) { window in quotaRow(window, fresh: fresh) }
+                            ForEach(reading.visibleWindows) { window in quotaRow(window, fresh: fresh) }
                         }
                     }
                     if reading.credits != nil || reading.unlimitedCredits || reading.resetCardsAvailable != nil {
@@ -173,7 +173,7 @@ struct DashboardView: View {
                 } else {
                     compactSummary(reading, fresh: fresh)
                 }
-                if !fresh, !reading.detail.isEmpty, expanded || !reading.windows.isEmpty {
+                if !fresh, !reading.detail.isEmpty, expanded || reading.hasVisibleQuota {
                     Text(reading.detail).font(.system(size: 10)).foregroundStyle(.secondary)
                         .lineLimit(expanded ? nil : 1).help(reading.detail)
                         .fixedSize(horizontal: false, vertical: true)
@@ -196,8 +196,8 @@ struct DashboardView: View {
     private func compactSummary(_ reading: AccountReading, fresh: Bool) -> some View {
         let metrics = compactMetrics(reading)
         return VStack(alignment: .leading, spacing: 7) {
-            if metrics.isEmpty || (!fresh && reading.windows.isEmpty) {
-                let notice = fresh ? "来源未提供独立额度" : (reading.detail.isEmpty ? reading.displayStatus(at: store.now).title : reading.detail)
+            if metrics.isEmpty {
+                let notice = fresh ? "暂无可显示额度" : (reading.detail.isEmpty ? reading.displayStatus(at: store.now).title : reading.detail)
                 Text(notice).font(.system(size: 11)).foregroundStyle(.secondary)
                     .lineLimit(2).help(notice).fixedSize(horizontal: false, vertical: true)
             } else {
@@ -214,7 +214,7 @@ struct DashboardView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if fresh, let primary = reading.windows.first(where: { $0.group == "default" && $0.remainingPercent != nil }),
+            if fresh, let primary = reading.visibleWindows.first(where: { $0.group == "default" && $0.remainingPercent != nil }),
                let percent = primary.remainingPercent {
                 GeometryReader { geometry in
                     ZStack(alignment: .leading) {
@@ -230,7 +230,7 @@ struct DashboardView: View {
     }
 
     private func compactMetrics(_ reading: AccountReading) -> [CompactMetric] {
-        var result = reading.windows.enumerated().map { index, window in
+        var result = reading.visibleWindows.enumerated().map { index, window in
             CompactMetric(id: "window-\(index)", label: shortWindowTitle(window), value: window.displayValue, color: quotaColor(window.remainingPercent))
         }
         if reading.credits != nil || reading.unlimitedCredits {
@@ -253,7 +253,7 @@ struct DashboardView: View {
     }
 
     private func accountAlert(_ reading: AccountReading) -> String? {
-        let alerts = reading.windows.compactMap { $0.alert(at: store.now) }
+        let alerts = reading.visibleWindows.compactMap { $0.alert(at: store.now) }
         return alerts.contains("即将重置") ? "即将重置" : alerts.first
     }
 
