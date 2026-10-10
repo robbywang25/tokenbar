@@ -136,7 +136,7 @@ struct DashboardView: View {
                             Text(service).lineLimit(1).help(service)
                             Text("·")
                             Circle().fill(fresh ? Color.green : Color.secondary.opacity(0.6)).frame(width: 5, height: 5)
-                            Text(fresh ? "已连接" : "当前未知")
+                            Text(reading?.displayStatus(at: store.now).title ?? "等待首次读取")
                                 .fixedSize(horizontal: true, vertical: false)
                                 .help(reading?.displayStatus(at: store.now).title ?? "等待首次读取")
                             if fresh, let reading, let alert = accountAlert(reading) {
