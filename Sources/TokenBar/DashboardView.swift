@@ -50,7 +50,7 @@ struct DashboardView: View {
                 .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 11))
             VStack(alignment: .leading, spacing: 2) {
                 Text("TokenBar").font(.system(size: 18, weight: .semibold, design: .rounded))
-                Text(store.accounts.isEmpty ? "每个账号，一眼看清" : "\(store.accounts.count) 个账号 · 独立额度")
+                Text(store.accounts.isEmpty ? "每个账号，一眼看清" : "\(store.accounts.count) 个额度来源")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
