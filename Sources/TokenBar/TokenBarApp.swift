@@ -65,7 +65,12 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate
             expiryNotice.dismissImmediately()
             NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
+            if let window = popover.contentViewController?.view.window {
+                window.makeKey()
+                // Opening the panel is not keyboard navigation. Start with the
+                // window itself focused, and let Tab enter the normal key loop.
+                window.makeFirstResponder(nil)
+            }
             Task { await store.refresh() }
         }
     }
