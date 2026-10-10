@@ -4,6 +4,69 @@ import XCTest
 
 final class AppStoreTests: XCTestCase {
     @MainActor
+    func testAgentPrefixesDefaultOnGroupOnlySameAccountAndPersistOffWithoutChangingSelections() async throws {
+        let fixture = try StoreFixture(showsAgentPrefix: nil)
+        defer { fixture.remove() }
+        var first = try fixture.snapshot(name: "Legacy Personal Name", accountID: "one", windows: [["id": "weekly", "remainingPercent": 63]], credits: ["remaining": 25_800])
+        first.serviceLabel = "codex"
+        var second = try fixture.snapshot(name: "Another Personal Name", accountID: "two", windows: [["id": "weekly", "remainingPercent": 12]])
+        second.serviceLabel = "CODEX"
+        var third = try fixture.snapshot(name: "Third Personal Name", accountID: "three", windows: [["id": "weekly", "remainingPercent": 98]])
+        third.serviceLabel = "Grok Build"
+        let store = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+        XCTAssertTrue(store.showsAgentPrefix)
+        try await store.connect(first)
+        try await store.connect(second)
+        try await store.connect(third)
+        XCTAssertEqual(store.menuTitle, "Codex 63%")
+        let credits = try XCTUnwrap(store.availableMenuMetrics.first(where: { $0.kind == .credits }))
+        store.setMenuMetric(credits, enabled: true)
+        store.setMenuQuota(accountID: second.id, windowID: "weekly", enabled: true)
+        store.setMenuQuota(accountID: third.id, windowID: "weekly", enabled: true)
+        store.readings[first.id]?.email = "fixture@example.com"
+        XCTAssertEqual(store.menuTitle, "Codex 63% · 25.8k · Codex 12% · Grok 98%")
+        XCTAssertFalse(store.menuTitle.contains("fixture@example.com"))
+        XCTAssertFalse(store.menuTitle.contains("Personal Name"))
+        let selection = store.menuQuotaSelection
+        let tooltip = store.menuTooltip
+        store.setShowsAgentPrefix(false)
+        XCTAssertEqual(store.menuTitle, "63% · 25.8k · 12% · 98%")
+        XCTAssertEqual(store.menuQuotaSelection, selection)
+        XCTAssertEqual(store.menuTooltip, tooltip)
+        let restored = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+        XCTAssertFalse(restored.showsAgentPrefix)
+        XCTAssertEqual(restored.menuTitle, "63% · 25.8k · 12% · 98%")
+        XCTAssertEqual(restored.menuQuotaSelection, selection)
+        restored.setShowsAgentPrefix(true)
+        XCTAssertTrue(AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults).showsAgentPrefix)
+        restored.now = Date().addingTimeInterval(121)
+        XCTAssertEqual(restored.menuTitle, "Codex — · — · Codex — · Grok —")
+        for metric in restored.availableMenuMetrics { restored.setMenuMetric(metric, enabled: false) }
+        XCTAssertEqual(restored.menuTitle, "—")
+    }
+
+    @MainActor
+    func testAgentPrefixDemoChangesNeverPersistAndExitRestoresPreference() throws {
+        let fixture = try StoreFixture(showsAgentPrefix: nil)
+        defer { fixture.remove() }
+        let store = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
+        store.loadDemo()
+        XCTAssertEqual(store.menuTitle, "Codex 32%")
+        store.setShowsAgentPrefix(false)
+        XCTAssertEqual(store.menuTitle, "32%")
+        XCTAssertNil(fixture.defaults.object(forKey: "showsAgentPrefix.v1"))
+        store.exitDemo()
+        XCTAssertTrue(store.showsAgentPrefix)
+        store.setShowsAgentPrefix(false)
+        store.loadDemo()
+        store.setShowsAgentPrefix(true)
+        XCTAssertFalse(fixture.defaults.bool(forKey: "showsAgentPrefix.v1"))
+        store.exitDemo()
+        XCTAssertFalse(store.showsAgentPrefix)
+        XCTAssertEqual(store.menuTitle, "—")
+    }
+
+    @MainActor
     func testExpiryNoticesRequireFreshAuthenticatedNearResetSlowPaceWithSubstantialRemaining() throws {
         let fixture = try StoreFixture()
         defer { fixture.remove() }
@@ -573,9 +636,10 @@ private struct StoreFixture {
     private let defaultsSuite: String
     var state: URL { directory.appendingPathComponent("state") }
 
-    init() throws {
+    init(showsAgentPrefix: Bool? = false) throws {
         defaultsSuite = "TokenBarTests." + UUID().uuidString
         defaults = UserDefaults(suiteName: defaultsSuite)!
+        if let showsAgentPrefix { defaults.set(showsAgentPrefix, forKey: "showsAgentPrefix.v1") }
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("TokenBar-AppStoreTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
     }

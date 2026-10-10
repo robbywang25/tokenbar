@@ -455,6 +455,12 @@ struct DashboardView: View {
                 Text("已选 \(selectedMenuQuotaCount) 项")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
+            Toggle("显示 Agent 前缀", isOn: Binding(
+                get: { store.showsAgentPrefix },
+                set: { store.setShowsAgentPrefix($0) }
+            ))
+            .toggleStyle(.switch).controlSize(.small)
+            .help("例如 Codex 63%；关闭后仅显示数值。")
             if store.availableMenuMetrics.isEmpty {
                 Text("暂无可显示的额度")
                     .font(.caption).foregroundStyle(.secondary)

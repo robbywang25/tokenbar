@@ -4,6 +4,25 @@ import XCTest
 final class ModelsTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_790_000_000)
 
+    func testMenuAgentPrefixUsesProductLabelsAndBoundsSafeCustomNames() {
+        for (provider, expected): (ProviderKind, String) in [(.codex, "Codex"), (.claude, "Claude"), (.grok, "Grok")] {
+            let account = AccountConfig(provider: provider, name: "Legacy Personal Name", method: .localFile, location: "", serviceLabel: "person@example.com")
+            XCTAssertEqual(account.menuAgentPrefix, expected)
+        }
+        let mappings = ["OpenAI": "OpenAI", "ChatGPT": "ChatGPT", "OpenAI Codex": "Codex", " cOdEx ": "Codex", "Claude Code": "Claude", "ANTHROPIC": "Anthropic",
+                        "Grok Build": "Grok", "x.AI": "xAI", "grok-bot": "GrokBot", "  CURSOR ": "Cursor",
+                        "  QA   Agent  ": "QA Agent", "abcdefghijkl": "abcdefgh…", "开发智能助手工具平台": "开发智能助手工具…",
+                        "E\u{301}quipeAI": "ÉquipeAI"]
+        for (label, expected) in mappings {
+            let account = AccountConfig(provider: .snapshot, name: "Legacy Personal Name", method: .snapshotFile, location: "", serviceLabel: label)
+            XCTAssertEqual(account.menuAgentPrefix, expected)
+        }
+        for label: String? in [nil, "", "   ", "person@example.com", "https://example.com", "Agent\nOther", "Agent\tOther", "Agent\u{0}Other"] {
+            let account = AccountConfig(provider: .snapshot, name: "Never Use Legacy Name", method: .snapshotFile, location: "", serviceLabel: label)
+            XCTAssertEqual(account.menuAgentPrefix, "JSON")
+        }
+    }
+
     func testLegacyCachedReadingDecodesWithoutNewContractFields() throws {
         let legacy: [String: Any] = ["status": "connected", "checkedAt": now.timeIntervalSinceReferenceDate,
                                     "lastSuccessAt": now.timeIntervalSinceReferenceDate, "windows": [],
@@ -137,6 +156,7 @@ final class ModelsTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let suite = "TokenBarModelsTests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(false, forKey: "showsAgentPrefix.v1")
         defer { try? FileManager.default.removeItem(at: directory); defaults.removePersistentDomain(forName: suite) }
         let store = AppStore(directory: directory, startTimers: false, defaults: defaults)
         store.loadDemo()

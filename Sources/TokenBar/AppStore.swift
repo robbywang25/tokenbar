@@ -18,6 +18,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var menuQuotaSelection: Set<String>?
     @Published private(set) var rememberedMenuMetrics: [MenuQuotaMetric] = []
     @Published private(set) var expiryAlertsEnabled = true
+    @Published private(set) var showsAgentPrefix = true
 
     private var rememberedAccountEmails: [UUID: RememberedAccountEmail] = [:]
     private let client: ProviderClient
@@ -25,6 +26,7 @@ final class AppStore: ObservableObject {
     private let defaults: UserDefaults
     private static let menuSelectionKey = "menuQuotaSelection.v1"
     private static let menuMetricsKey = "menuQuotaMetrics.v1"
+    private static let agentPrefixKey = "showsAgentPrefix.v1"
     private static let expiryEnabledKey = "expiryAlertsEnabled.v1"
     private static let expiryReceiptsKey = "expiryNoticeReceipts.v1"
     private struct ExpiryReceipt: Codable {
@@ -108,8 +110,24 @@ final class AppStore: ObservableObject {
     }
 
     var menuTitle: String {
-        let values = selectedMenuMetrics.map(menuValue)
-        return values.isEmpty ? "—" : values.joined(separator: " · ")
+        let metrics = selectedMenuMetrics
+        guard !metrics.isEmpty else { return "—" }
+        guard showsAgentPrefix else { return metrics.map(menuValue).joined(separator: " · ") }
+        var previousAccount: UUID?
+        var previousPrefix: String?
+        return metrics.map { metric in
+            let prefix = accounts.first(where: { $0.id == metric.accountID })?.menuAgentPrefix ?? "JSON"
+            let value = menuValue(metric)
+            let showPrefix = previousAccount != metric.accountID || previousPrefix != prefix
+            previousAccount = metric.accountID
+            previousPrefix = prefix
+            return showPrefix ? prefix + " " + value : value
+        }.joined(separator: " · ")
+    }
+
+    func setShowsAgentPrefix(_ enabled: Bool) {
+        showsAgentPrefix = enabled
+        if !isDemo { defaults.set(enabled, forKey: Self.agentPrefixKey) }
     }
 
     func setExpiryAlertsEnabled(_ enabled: Bool) {
@@ -286,6 +304,7 @@ final class AppStore: ObservableObject {
     }
 
     private func loadMenuPreferences() {
+        showsAgentPrefix = defaults.object(forKey: Self.agentPrefixKey) == nil ? true : defaults.bool(forKey: Self.agentPrefixKey)
         menuQuotaSelection = defaults.stringArray(forKey: Self.menuSelectionKey).map(Set.init)
         if let data = defaults.data(forKey: Self.menuMetricsKey), data.count <= 1_048_576,
            let metrics = try? JSONDecoder().decode([MenuQuotaMetric].self, from: data), metrics.count <= 1_950 {

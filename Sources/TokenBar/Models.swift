@@ -32,6 +32,33 @@ struct AccountConfig: Codable, Identifiable, Equatable {
     var sshUseSudo: Bool? = nil
     var serviceLabel: String? = nil
     var displayService: String { serviceLabel ?? provider.title }
+
+    var menuAgentPrefix: String {
+        switch provider {
+        case .codex: return "Codex"
+        case .claude: return "Claude"
+        case .grok: return "Grok"
+        case .snapshot: break
+        }
+        let raw = serviceLabel ?? ""
+        guard !raw.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return "JSON" }
+        let label = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ").precomposedStringWithCanonicalMapping
+        guard !label.isEmpty,
+              label.range(of: "\\A[\\p{L}\\p{N} ._-]+\\z", options: .regularExpression) != nil else { return "JSON" }
+        let key = label.lowercased().filter { !" ._-".contains($0) }
+        switch key {
+        case "codex", "openaicodex": return "Codex"
+        case "chatgpt": return "ChatGPT"
+        case "openai": return "OpenAI"
+        case "claude", "claudecode": return "Claude"
+        case "anthropic": return "Anthropic"
+        case "grok", "grokbuild": return "Grok"
+        case "xai": return "xAI"
+        case "grokbot": return "GrokBot"
+        case "cursor": return "Cursor"
+        default: return label.count > 8 ? String(label.prefix(8)) + "…" : label
+        }
+    }
 }
 
 enum MenuMetricKind: String, Codable {

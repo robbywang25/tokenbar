@@ -100,6 +100,7 @@ final class EmailIdentityTests: XCTestCase {
             snapshot = root.appendingPathComponent("quota.json")
             suite = "TokenBar.EmailIdentityTests." + UUID().uuidString
             defaults = UserDefaults(suiteName: suite)!
+            defaults.set(false, forKey: "showsAgentPrefix.v1")
             account = AccountConfig(provider: .snapshot, name: "Legacy Personal Name", method: .snapshotFile, location: snapshot.path, sourceAccountID: "example", serviceLabel: "Codex")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         }
