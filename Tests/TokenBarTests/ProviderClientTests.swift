@@ -103,6 +103,31 @@ final class ProviderClientTests: XCTestCase {
         }
     }
 
+    func testSnapshotReadsOnlySupportedNumericPlanMultipliersAndPreservesRawPlan() throws {
+        var object: [String: Any] = ["id": "fixture", "status": "connected", "lastSuccessAt": now.timeIntervalSince1970,
+                                      "windows": [["remainingPercent": 40]]]
+        for multiplier in [5, 10, 20, 25, 50] {
+            object["subscription"] = ["planName": "ChatGPT Pro 200", "planMultiplier": multiplier]
+            let reading = try ProviderClient.parseSnapshot(json(object), at: now)
+            XCTAssertEqual(reading.planName, "ChatGPT Pro 200")
+            XCTAssertEqual(reading.planMultiplier, multiplier)
+            let cached = try JSONDecoder().decode(AccountReading.self, from: JSONEncoder().encode(reading))
+            XCTAssertEqual(cached.planMultiplier, multiplier)
+        }
+        for invalid: Any in ["20", true, false, NSNull(), -20, 0, 20.5, 200, 500, 1e20] {
+            object["subscription"] = ["planName": "ChatGPT Pro 200", "planMultiplier": invalid]
+            let reading = try ProviderClient.parseSnapshot(json(object), at: now)
+            XCTAssertNil(reading.planMultiplier)
+            XCTAssertEqual(reading.status, .connected)
+        }
+        object["subscription"] = ["planName": "Bearer credential", "planMultiplier": 20]
+        let unsafePlan = try ProviderClient.parseSnapshot(json(object), at: now)
+        XCTAssertNil(unsafePlan.planName)
+        XCTAssertNil(unsafePlan.planMultiplier)
+        object["subscription"] = ["planName": "ChatGPT Pro 200", "monthlyPrice": 200]
+        XCTAssertNil(try ProviderClient.parseSnapshot(json(object), at: now).planMultiplier)
+    }
+
     func testSnapshotPreservesKnownFailureReasonsWithoutEchoingUpstreamDetails() throws {
         let messages = ["rate_limited": "平台暂时限流，等待重试。", "reset_passed": "已到平台提供的刷新时间，等待新读数确认。",
                         "invalid_data": ProviderError.invalidData.message, "network_error": "额度来源暂时无法连接，显示上次成功读数。"]

@@ -155,6 +155,7 @@ struct AccountReading: Codable, Equatable {
     var identityKey: String? = nil
     // Optional fields keep existing locally cached readings decodable.
     var planName: String? = nil
+    var planMultiplier: Int? = nil
     var sourceCollectedAt: Date? = nil
     // A present-but-null/invalid source timestamp must not become a fresh legacy read.
     var sourceCollectedAtPresent: Bool? = nil

@@ -243,7 +243,12 @@ struct ProviderClient {
         let profile = account["profile"] as? [String: Any]
         result.name = safeName(profile?["name"])
         result.email = safeEmail(profile?["email"])
-        result.planName = safePlanName((account["subscription"] as? [String: Any])?["planName"])
+        let subscription = account["subscription"] as? [String: Any]
+        result.planName = safePlanName(subscription?["planName"])
+        if result.planName != nil, let multiplier = nonnegativeInteger(subscription?["planMultiplier"]),
+           [5, 10, 20, 25, 50].contains(multiplier) {
+            result.planMultiplier = multiplier
+        }
         if let reason = account["reason"] as? String,
            ["connected", "stale", "needs_auth", "unavailable", "not_configured", "unsupported", "expired", "network_error", "invalid_data", "duplicate", "pooled", "rate_limited", "reset_passed"].contains(reason) {
             result.reason = reason

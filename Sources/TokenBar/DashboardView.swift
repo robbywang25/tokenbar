@@ -555,7 +555,9 @@ struct DashboardView: View {
     }
 
     private func serviceSummary(_ account: AccountConfig, reading: AccountReading?) -> String {
-        guard let plan = reading?.planName?.trimmingCharacters(in: .whitespacesAndNewlines), !plan.isEmpty else {
+        guard let plan = SubscriptionPlanLabel.displayName(planName: reading?.planName,
+                                                          multiplier: reading?.planMultiplier,
+                                                          isCodex: account.menuAgentPrefix == "Codex") else {
             return account.displayService
         }
         return account.displayService + " · " + plan
