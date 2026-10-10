@@ -63,6 +63,86 @@ final class ProviderClientTests: XCTestCase {
         XCTAssertEqual(reading.windows.first?.remainingPercent, 40)
     }
 
+    func testSnapshotRespectsPerSourceCollectionTimeIncludingExplicitNullAndInvalidValues() throws {
+        let base: [String: Any] = ["id": "fixture", "status": "connected", "lastSuccessAt": now.timeIntervalSince1970,
+                                   "windows": [["id": "weekly", "remainingPercent": 40]]]
+        for raw: Any in [NSNull(), "not-a-date", true, now.addingTimeInterval(-121).timeIntervalSince1970, now.addingTimeInterval(61).timeIntervalSince1970] {
+            var account = base
+            account["sourceCollectedAt"] = raw
+            let data = try json(["collectedAt": now.timeIntervalSince1970, "accounts": [account]])
+            let reading = try ProviderClient.parseSnapshot(data, at: now)
+            XCTAssertEqual(reading.sourceCollectedAtPresent, true)
+            XCTAssertEqual(reading.status, .stale)
+            XCTAssertFalse(reading.isFresh(at: now))
+            XCTAssertEqual(reading.lastSuccessAt, now)
+        }
+        var independent = base
+        independent["sourceCollectedAt"] = now.timeIntervalSince1970
+        let staleEnvelope = try json(["collectedAt": now.addingTimeInterval(-600).timeIntervalSince1970, "accounts": [independent]])
+        XCTAssertEqual(try ProviderClient.parseSnapshot(staleEnvelope, at: now).status, .connected)
+        let inheritedStale = try json(["collectedAt": now.addingTimeInterval(-600).timeIntervalSince1970, "accounts": [base]])
+        XCTAssertEqual(try ProviderClient.parseSnapshot(inheritedStale, at: now).status, .stale)
+        let legacy = try ProviderClient.parseSnapshot(json(base), at: now)
+        XCTAssertEqual(legacy.status, .connected)
+        XCTAssertNil(legacy.sourceCollectedAtPresent)
+    }
+
+    func testSnapshotKeepsSafePlanNameAndDiscardsBillingAndUnsafePlanFields() throws {
+        var object: [String: Any] = ["id": "fixture", "status": "connected", "lastSuccessAt": now.timeIntervalSince1970,
+                                      "windows": [["remainingPercent": 40]],
+                                      "subscription": ["planName": "Claude Max", "monthlyPrice": 999_999, "currency": "private-currency", "paymentHistory": "private-history"]]
+        let reading = try ProviderClient.parseSnapshot(json(object), at: now)
+        XCTAssertEqual(reading.planName, "Claude Max")
+        let encoded = String(data: try JSONEncoder().encode(reading), encoding: .utf8)!
+        XCTAssertFalse(encoded.contains("monthlyPrice"))
+        XCTAssertFalse(encoded.contains("private-currency"))
+        XCTAssertFalse(encoded.contains("private-history"))
+        for invalid in ["Bearer credential", "sk-fixture", "eyJfixture", "Plan\nOther", String(repeating: "A", count: 65), "   "] {
+            object["subscription"] = ["planName": invalid]
+            XCTAssertNil(try ProviderClient.parseSnapshot(json(object), at: now).planName)
+        }
+    }
+
+    func testSnapshotPreservesKnownFailureReasonsWithoutEchoingUpstreamDetails() throws {
+        let messages = ["rate_limited": "平台暂时限流，等待重试。", "reset_passed": "已到平台提供的刷新时间，等待新读数确认。",
+                        "invalid_data": ProviderError.invalidData.message, "network_error": "额度来源暂时无法连接，显示上次成功读数。"]
+        for (reason, expected) in messages {
+            let data = try json(["id": "fixture", "status": "stale", "reason": reason, "lastSuccessAt": now.addingTimeInterval(-600).timeIntervalSince1970,
+                                 "retryAt": now.addingTimeInterval(90).timeIntervalSince1970, "detail": "untrusted private response body", "windows": [["remainingPercent": 40]]])
+            let reading = try ProviderClient.parseSnapshot(data, at: now)
+            XCTAssertEqual(reading.status, .stale)
+            XCTAssertEqual(reading.reason, reason)
+            XCTAssertEqual(reading.detail, expected)
+            XCTAssertFalse(reading.detail.contains("untrusted"))
+            XCTAssertEqual(reading.retryAt, reason == "rate_limited" ? now.addingTimeInterval(90) : nil)
+        }
+        let unavailable = try json(["status": "unavailable", "reason": "network_error", "detail": "untrusted private response body"])
+        XCTAssertEqual(try ProviderClient.parseSnapshot(unavailable, at: now).detail, "额度来源暂时无法连接。")
+        let unknown = try json(["status": "unavailable", "reason": "untrusted_reason", "retryAt": now.timeIntervalSince1970])
+        let reading = try ProviderClient.parseSnapshot(unknown, at: now)
+        XCTAssertNil(reading.reason)
+        XCTAssertNil(reading.retryAt)
+    }
+
+    func testRequestsAndAbsoluteAmountsInferPercentWithoutInventingZeroLimitOrUnlimitedPercent() throws {
+        let windows: [[String: Any]] = [
+            ["id": "requests", "unit": "requests", "remaining": 25, "limit": 100],
+            ["id": "zero", "unit": "tokens", "remaining": 0, "limit": 100],
+            ["id": "zero-limit", "unit": "messages", "remaining": 0, "limit": 0],
+            ["id": "percent-amount", "unit": "percent", "remaining": 2, "limit": 8],
+            ["id": "explicit", "unit": "USD", "remaining": 25, "limit": 100, "remainingPercent": 40],
+            ["id": "unlimited", "unit": "requests", "remaining": 25, "limit": 100, "remainingPercent": 40, "unlimited": true]
+        ]
+        let data = try json(["status": "connected", "lastSuccessAt": now.timeIntervalSince1970, "windows": windows])
+        let reading = try ProviderClient.parseSnapshot(data, at: now)
+        XCTAssertEqual(reading.windows.map(\.remainingPercent), [25, 0, nil, 25, 40, nil])
+        XCTAssertEqual(reading.windows[0].unit, "requests")
+        XCTAssertEqual(reading.windows[0].remaining, 25)
+        XCTAssertTrue(reading.windows[5].unlimited)
+        XCTAssertNil(reading.windows[5].remaining)
+        XCTAssertNil(reading.windows[5].limit)
+    }
+
     func testSnapshotFutureTimestampAndMissingTimestampAreStale() throws {
         let future = try snapshot(observed: now.addingTimeInterval(61))
         XCTAssertEqual(try ProviderClient.parseSnapshot(future, at: now).status, .stale)

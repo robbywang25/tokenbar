@@ -19,6 +19,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var rememberedMenuMetrics: [MenuQuotaMetric] = []
     @Published private(set) var expiryAlertsEnabled = true
 
+    private var rememberedAccountEmails: [UUID: RememberedAccountEmail] = [:]
     private let client: ProviderClient
     private let directory: URL
     private let defaults: UserDefaults
@@ -60,6 +61,52 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func accountEmail(_ account: AccountConfig) -> String? {
+        if let email = AccountEmail.validated(readings[account.id]?.email) { return email }
+        guard let saved = rememberedAccountEmails[account.id],
+              saved.sourceSignature == AccountEmail.sourceSignature(account),
+              let email = AccountEmail.validated(saved.email) else { return nil }
+        if let currentIdentity = readings[account.id]?.identityKey,
+           let previousIdentity = saved.identityKey, currentIdentity != previousIdentity { return nil }
+        return email
+    }
+
+    func accountIdentityLabel(_ account: AccountConfig) -> String {
+        accountEmail(account) ?? "邮箱待确认"
+    }
+
+    func accountIdentityHelp(_ account: AccountConfig) -> String {
+        guard let email = accountEmail(account) else { return "来源尚未提供邮箱。" }
+        return AccountEmail.validated(readings[account.id]?.email) != nil
+            ? email : email + "\n上次识别的邮箱；当前来源未返回邮箱。"
+    }
+
+    private func rememberAccountEmails(persist: Bool = true) {
+        let previous = rememberedAccountEmails
+        rememberedAccountEmails = rememberedAccountEmails.filter { id, saved in
+            accounts.contains { $0.id == id && saved.sourceSignature == AccountEmail.sourceSignature($0) }
+        }
+        for account in accounts {
+            guard let reading = readings[account.id] else { continue }
+            if let email = AccountEmail.validated(reading.email) {
+                rememberedAccountEmails[account.id] = RememberedAccountEmail(email: email,
+                    sourceSignature: AccountEmail.sourceSignature(account), identityKey: reading.identityKey)
+            } else if reading.status == .connected || reading.reason == "invalid_data" || reading.reason == "duplicate" ||
+                        (reading.email != nil) ||
+                        (reading.identityKey != nil && rememberedAccountEmails[account.id]?.identityKey != nil && reading.identityKey != rememberedAccountEmails[account.id]?.identityKey) {
+                rememberedAccountEmails.removeValue(forKey: account.id)
+            }
+        }
+        guard persist, !isDemo, rememberedAccountEmails != previous else { return }
+        persistAccountEmails()
+    }
+
+    private func persistAccountEmails() {
+        guard !isDemo else { return }
+        do { try save(rememberedAccountEmails, name: "account-emails.json") }
+        catch { errorMessage = "账号邮箱未能保存到本机。" }
+    }
+
     var menuTitle: String {
         let values = selectedMenuMetrics.map(menuValue)
         return values.isEmpty ? "—" : values.joined(separator: " · ")
@@ -89,7 +136,7 @@ final class AppStore: ObservableObject {
                       let reset = window.resetsAt else { continue }
                 let id = account.id.uuidString + "/" + window.id + "@" + String(reset.timeIntervalSince1970)
                 guard !seen.contains(id) else { continue }
-                candidates.append(ExpiryNotice(id: id, accountName: account.name, serviceLabel: account.displayService,
+                candidates.append(ExpiryNotice(id: id, accountName: accountIdentityLabel(account), serviceLabel: account.displayService,
                     windowLabel: window.title + (window.model.map { " · " + $0 } ?? ""), remainingPercent: remaining, resetsAt: reset))
             }
         }
@@ -152,17 +199,17 @@ final class AppStore: ObservableObject {
         accounts.flatMap { account -> [MenuQuotaMetric] in
             let windows = readings[account.id]?.windows ?? []
             var current = windows.filter { $0.remainingPercent != nil }.map { window in
-                MenuQuotaMetric(accountID: account.id, windowID: window.id, accountName: account.name,
+                MenuQuotaMetric(accountID: account.id, windowID: window.id, accountName: accountIdentityLabel(account),
                                 windowLabel: window.title + (window.model.map { " · " + $0 } ?? ""), group: window.group)
             }
             if let reading = readings[account.id], reading.credits != nil || reading.unlimitedCredits {
-                current.append(MenuQuotaMetric(accountID: account.id, windowID: "", accountName: account.name,
+                current.append(MenuQuotaMetric(accountID: account.id, windowID: "", accountName: accountIdentityLabel(account),
                                                windowLabel: "剩余点数", group: "credits", kind: .credits))
             }
             let currentIDs = Set(current.map(\.id))
             let previous = rememberedMenuMetrics.filter { $0.accountID == account.id && !currentIDs.contains($0.id) }.map { metric in
                 var metric = metric
-                metric.accountName = account.name
+                metric.accountName = accountIdentityLabel(account)
                 // An existing window may change group or stop providing a
                 // percentage. Its old default label must not revive Reserve.
                 if metric.kind != .credits, let window = windows.first(where: { $0.id == metric.windowID }) {
@@ -263,6 +310,7 @@ final class AppStore: ObservableObject {
         // immediately, even while an earlier network refresh is still running.
         now = Date()
         guard !isRefreshing, !isDemo else { return }
+        rememberAccountEmails()
         rememberMenuChoices()
         isRefreshing = true
         let currentRevision = revision
@@ -291,7 +339,7 @@ final class AppStore: ObservableObject {
                 readings[id] = reading
             }
         }
-        if revision == currentRevision { lastRefresh = Date(); rememberMenuChoices(); persistReadings() }
+        if revision == currentRevision { lastRefresh = Date(); rememberAccountEmails(); rememberMenuChoices(); persistReadings() }
         now = Date()
         isRefreshing = false
     }
@@ -322,6 +370,7 @@ final class AppStore: ObservableObject {
             revision += 1
             accounts = updated
             readings[config.id] = reading
+            rememberAccountEmails()
             rememberMenuChoices()
             persistReadings()
             errorMessage = nil
@@ -351,6 +400,7 @@ final class AppStore: ObservableObject {
             if !isDemo { try save(updated, name: "accounts.json") }
             revision += 1
             accounts = updated; readings.removeValue(forKey: config.id)
+            rememberAccountEmails()
             rememberMenuChoices()
             if !isDemo {
                 if config.method == .snapshotURL { CredentialStore.delete(account: config.id.uuidString) }
@@ -389,6 +439,20 @@ final class AppStore: ObservableObject {
         accounts = (try? read([AccountConfig].self, name: "accounts.json")) ?? []
         readings = (try? read([UUID: AccountReading].self, name: "readings.json")) ?? [:]
         readings = readings.filter { id, _ in accounts.contains { $0.id == id } }
+        rememberedAccountEmails = (try? read([UUID: RememberedAccountEmail].self, name: "account-emails.json")) ?? [:]
+        var invalidatedReading = false
+        for account in accounts {
+            if let saved = rememberedAccountEmails[account.id], saved.sourceSignature != AccountEmail.sourceSignature(account) {
+                if readings.removeValue(forKey: account.id) != nil { invalidatedReading = true }
+            }
+        }
+        // Clear mismatched persisted readings before removing their binding guard;
+        // otherwise a second restart could revive the old source's email/balance.
+        if invalidatedReading {
+            do { try save(readings, name: "readings.json") }
+            catch { errorMessage = "旧来源缓存未能清理，当前读数已隐藏。"; return }
+        }
+        rememberAccountEmails()
         rememberMenuChoices(persist: false)
     }
 
@@ -433,11 +497,11 @@ final class AppStore: ObservableObject {
             codex.id: AccountReading(status: .connected, checkedAt: base, lastSuccessAt: base,
                 windows: [QuotaWindow(id: "week", label: "每周", remainingPercent: 32, resetsAt: base.addingTimeInterval(172800), startsAt: base.addingTimeInterval(-432000)),
                           QuotaWindow(id: "reserve", label: "每周", remainingPercent: 100, resetsAt: base.addingTimeInterval(345600), group: "reserve", model: "Luna")],
-                credits: 24150.50, resetCardsAvailable: 2, resetCards: [ResetCard(status: "available", expiresAt: base.addingTimeInterval(864000))], name: "Personal"),
+                credits: 24150.50, resetCardsAvailable: 2, resetCards: [ResetCard(status: "available", expiresAt: base.addingTimeInterval(864000))], name: "Personal", email: "personal@example.com"),
             claude.id: AccountReading(status: .connected, checkedAt: base, lastSuccessAt: base,
-                windows: [QuotaWindow(id: "five", label: "5 小时", remainingPercent: 76, resetsAt: base.addingTimeInterval(7200)), QuotaWindow(id: "week", label: "每周", remainingPercent: 58, resetsAt: base.addingTimeInterval(259200))]),
+                windows: [QuotaWindow(id: "five", label: "5 小时", remainingPercent: 76, resetsAt: base.addingTimeInterval(7200)), QuotaWindow(id: "week", label: "每周", remainingPercent: 58, resetsAt: base.addingTimeInterval(259200))], email: "work@example.com"),
             grok.id: AccountReading(status: .connected, checkedAt: base, lastSuccessAt: base,
-                windows: [QuotaWindow(id: "week", label: "每周", remainingPercent: 94, resetsAt: base.addingTimeInterval(36000), startsAt: base.addingTimeInterval(-568800))])
+                windows: [QuotaWindow(id: "week", label: "每周", remainingPercent: 94, resetsAt: base.addingTimeInterval(36000), startsAt: base.addingTimeInterval(-568800))], email: "builder@example.com")
         ]
         rememberMenuChoices(persist: false)
     }

@@ -2,7 +2,7 @@
 
 A native macOS menu-bar app for monitoring your AI agent quotas across accounts. Local credentials stay on your Mac; each provider is connected explicitly.
 
-TokenBar 把多个 AI Agent 账号的额度放到 macOS 菜单栏。点击菜单栏图标即可查看剩余比例、重置时间和数据更新时间；应用没有 Dock 图标，也不需要常驻主窗口。
+TokenBar 把多个 AI Agent 账号的额度放到 macOS 菜单栏。点击菜单栏数值即可查看剩余比例、重置时间和数据更新时间；应用没有 Dock 图标，也不需要常驻主窗口。
 
 [下载安装包](https://github.com/robbywang25/tokenbar/releases) · [问题反馈](https://github.com/robbywang25/tokenbar/issues) · [MIT 许可证](LICENSE)
 
@@ -12,7 +12,9 @@ TokenBar 把多个 AI Agent 账号的额度放到 macOS 菜单栏。点击菜单
 
 ## 能看到什么
 
-- 按账号展示 Codex、Claude Code、Grok Build 和自定义数据源。
+- 以邮箱为主标题展示 Codex、Claude Code、Grok Build 和自定义数据源，套餐、服务和状态保持次要层级。设置、悬停提示和临期提醒同样使用邮箱。
+- 来源暂时不可用时可保留同一来源上次识别的邮箱，悬停会注明；没有可信邮箱时显示“邮箱待确认”。来源变更或已识别账号变更会清除旧身份标签，旧余额不会因此变成实时。
+- 同步新版 Tokens 的套餐名称、限流/待更新原因、逐来源采集时效与 requests 单位。Reserve 继续隐藏，不参与可见额度时效和提醒。
 - 菜单栏只显示选中的额度数值，例如 `62% · 94%`；在设置里按账号、额度窗口分别开关，选择会保留。失效读数显示 `—`。
 - Codex 剩余点数也可单独开启，菜单栏使用 `44.7k` 等紧凑数值，悬停显示准确点数。
 - 有效额度余量较多且临近重置时，在菜单栏下方显示约 6 秒的轻量提醒，同一账号/窗口/周期只提醒一次。不会进入系统通知中心或抢焦点，可在设置中关闭，并遵守系统减少动态效果偏好。
@@ -41,7 +43,7 @@ open dist/TokenBar.app
 
 ## 接入自己的账号
 
-首次启动为空列表。点击“添加账号”，选择服务商和数据来源，再点“验证并添加”。应用验证成功后才保留配置；账号使用独立 UUID，可自定义名称，支持同时接入多个账号。
+首次启动为空列表。点击“添加账号”，选择服务商和数据来源，再点“验证并添加”。应用验证成功后才保留配置；账号使用独立 UUID，支持同时接入多个账号。邮箱由来源提供，作为账号主标题；不显示个人名称。
 
 | 来源 | 接入方式 | 范围与限制 |
 | --- | --- | --- |
@@ -77,7 +79,7 @@ SSH 接入使用系统 SSH 和既有的密钥或 agent，启用严格主机密�
       "id": "example-personal",
       "status": "connected",
       "lastSuccessAt": "2026-10-09T00:00:00Z",
-      "profile": { "name": "Personal" },
+      "profile": { "email": "personal@example.com" },
       "identity": { "provider": "example", "accountID": "stable-account-id" },
       "windows": [
         {
@@ -100,7 +102,7 @@ SSH 接入使用系统 SSH 和既有的密钥或 agent，启用严格主机密�
 
 - `status` 可为 `connected`、`stale`、`needs_auth`、`unavailable`、`not_configured` 或 `unsupported`。
 - 每个 `windows` 项至少提供 `remainingPercent`（0–100）、非负 `remaining` 或 `unlimited: true`。可附带不小于 `remaining` 的 `limit`。
-- `unit` 支持 `percent`、`tokens`、`messages`、`credits` 和 `USD`。`startsAt`、`resetsAt` 使用 ISO 8601 时间；`model` 是可选模型名称。
+- `unit` 支持 `percent`、`tokens`、`requests`、`messages`、`credits` 和 `USD`。`startsAt`、`resetsAt` 使用 ISO 8601 时间；`model` 是可选模型名称。
 - `quotaGroup` 支持 `default`、`reserve`、`code-review` 和 `additional`，便于保留不同额度池的边界。
 - `identity` 可选，用于识别不同数据源中的同一账号。它应包含服务商名和稳定账号 ID，不应包含访问令牌。
 - 文档最大 2 MiB，每个账号最多 64 个额度窗口。HTTPS 地址不能包含用户名、密码、查询参数或片段，也不跟随重定向。需要鉴权时使用独立 Bearer 输入框。

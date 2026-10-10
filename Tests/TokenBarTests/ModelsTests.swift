@@ -4,6 +4,36 @@ import XCTest
 final class ModelsTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_790_000_000)
 
+    func testLegacyCachedReadingDecodesWithoutNewContractFields() throws {
+        let legacy: [String: Any] = ["status": "connected", "checkedAt": now.timeIntervalSinceReferenceDate,
+                                    "lastSuccessAt": now.timeIntervalSinceReferenceDate, "windows": [],
+                                    "unlimitedCredits": false, "resetCards": [], "detail": ""]
+        let reading = try JSONDecoder().decode(AccountReading.self, from: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertNil(reading.planName)
+        XCTAssertNil(reading.sourceCollectedAt)
+        XCTAssertNil(reading.sourceCollectedAtPresent)
+        XCTAssertNil(reading.reason)
+        XCTAssertNil(reading.retryAt)
+        XCTAssertTrue(reading.isFresh(at: now))
+    }
+
+    func testSourceFreshnessSurvivesCacheRoundTripAndCannotBeOverriddenByRecentSuccess() throws {
+        var reading = AccountReading(status: .connected, checkedAt: now, lastSuccessAt: now)
+        reading.sourceCollectedAtPresent = true
+        XCTAssertFalse(reading.isFresh(at: now))
+        for source in [now.addingTimeInterval(-121), now.addingTimeInterval(61)] {
+            reading.sourceCollectedAt = source
+            XCTAssertFalse(reading.isFresh(at: now))
+        }
+        reading.sourceCollectedAt = now
+        XCTAssertTrue(reading.isFresh(at: now))
+        reading.sourceCollectedAt = nil
+        let restored = try JSONDecoder().decode(AccountReading.self, from: JSONEncoder().encode(reading))
+        XCTAssertEqual(restored.sourceCollectedAtPresent, true)
+        XCTAssertFalse(restored.isFresh(at: now))
+        XCTAssertEqual(restored.displayStatus(at: now), .stale)
+    }
+
     func testLegacyMenuMetricPreferencesDecodeAndCreditsCannotCollideWithWindows() throws {
         let accountID = UUID()
         let data = try JSONSerialization.data(withJSONObject: ["accountID": accountID.uuidString, "windowID": "credits", "accountName": "Personal", "windowLabel": "每周", "group": "default"])

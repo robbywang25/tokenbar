@@ -110,7 +110,10 @@ struct DashboardView: View {
         let reading = store.readings[account.id]
         let fresh = reading?.isFresh(at: store.now) == true
         let expanded = expandedAccounts.contains(account.id)
-        let presentation = presentationProvider(account)
+        let presentation = accountPresentation(account)
+        let identity = store.accountIdentityLabel(account)
+        let identityHelp = store.accountIdentityHelp(account)
+        let service = serviceSummary(account, reading: reading)
         return VStack(alignment: .leading, spacing: expanded ? 12 : 8) {
             Button {
                 if expanded { expandedAccounts.remove(account.id) }
@@ -119,35 +122,43 @@ struct DashboardView: View {
                 HStack(spacing: 9) {
                     Image(systemName: presentation.symbol)
                         .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(providerColor(presentation))
+                        .foregroundStyle(presentation.color)
                         .frame(width: 32, height: 32)
-                        .background(providerColor(presentation).opacity(0.10), in: RoundedRectangle(cornerRadius: 9))
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(account.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                        .background(presentation.color.opacity(0.10), in: RoundedRectangle(cornerRadius: 9))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(identity)
+                            .font(.system(size: 14, weight: .semibold))
+                            .lineLimit(2).truncationMode(.middle)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .help(identityHelp)
+                            .accessibilityLabel(identity)
                         HStack(spacing: 5) {
-                            Text(account.displayService).lineLimit(1)
+                            Text(service).lineLimit(1).help(service)
                             Text("·")
                             Circle().fill(fresh ? Color.green : Color.secondary.opacity(0.6)).frame(width: 5, height: 5)
-                            Text(reading?.displayStatus(at: store.now).title ?? "等待首次读取")
+                            Text(fresh ? "已连接" : "当前未知")
+                                .fixedSize(horizontal: true, vertical: false)
+                                .help(reading?.displayStatus(at: store.now).title ?? "等待首次读取")
+                            if fresh, let reading, let alert = accountAlert(reading) {
+                                Text(alert).font(.system(size: 9, weight: .medium))
+                                    .foregroundStyle(alert == "即将重置" ? Color.red : Color.orange)
+                                    .padding(.horizontal, 5).padding(.vertical, 3)
+                                    .background((alert == "即将重置" ? Color.red : Color.orange).opacity(0.10), in: Capsule())
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
                         }
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                     }
-                    Spacer(minLength: 4)
-                    if !fresh {
-                        Text("当前未知").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
-                    } else if let reading, let alert = accountAlert(reading) {
-                        Text(alert).font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(alert == "即将重置" ? Color.red : Color.orange)
-                            .padding(.horizontal, 5).padding(.vertical, 3)
-                            .background((alert == "即将重置" ? Color.red : Color.orange).opacity(0.10), in: Capsule())
-                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(1)
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(account.name)，\(expanded ? "收起" : "展开")账号详情")
+            .accessibilityLabel("\(identity)，\(service)，\(expanded ? "收起" : "展开")账号详情")
+            .accessibilityHint(identityHelp)
 
             if let reading {
                 if expanded {
@@ -316,9 +327,12 @@ struct DashboardView: View {
     private func accountDetails(_ account: AccountConfig, reading: AccountReading, fresh: Bool) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Divider()
-            if let email = reading.email, !email.isEmpty {
-                Label(email, systemImage: "person.crop.circle")
-                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            if let email = store.accountEmail(account) {
+                Label(email, systemImage: "envelope")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    .help(store.accountIdentityHelp(account))
+                    .accessibilityLabel("邮箱，" + email)
             }
             sourceDetails(account)
             if fresh, !reading.detail.isEmpty {
@@ -449,18 +463,21 @@ struct DashboardView: View {
                     let metrics = store.availableMenuMetrics.filter { $0.accountID == account.id }
                     if !metrics.isEmpty {
                         VStack(alignment: .leading, spacing: 7) {
-                            HStack(spacing: 6) {
-                                Text(account.name).font(.system(size: 11, weight: .semibold))
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(store.accountIdentityLabel(account))
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .lineLimit(2).truncationMode(.middle)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .help(store.accountIdentityHelp(account))
                                 Text(account.displayService).font(.system(size: 10)).foregroundStyle(.secondary)
                             }
-                            .lineLimit(1)
                             ForEach(metrics) { metric in
                                 Toggle(metric.windowLabel, isOn: Binding(
                                     get: { store.menuMetricSelected(metric) },
                                     set: { store.setMenuMetric(metric, enabled: $0) }
                                 ))
                                 .font(.system(size: 11)).toggleStyle(.switch).controlSize(.mini)
-                                .accessibilityLabel("\(account.name) · \(metric.windowLabel)，在菜单栏显示")
+                                .accessibilityLabel("\(store.accountIdentityLabel(account)) · \(account.displayService) · \(metric.windowLabel)，在菜单栏显示")
                             }
                         }
                     }
@@ -529,24 +546,30 @@ struct DashboardView: View {
         return percent <= 10 ? .red : percent <= 25 ? .orange : .accentColor
     }
 
-    private func presentationProvider(_ account: AccountConfig) -> ProviderKind {
-        guard account.provider == .snapshot else { return account.provider }
-        switch account.serviceLabel {
-        case "Codex": return .codex
-        case "Claude Code": return .claude
-        case "Grok Build": return .grok
-        default: return .snapshot
+    private func serviceSummary(_ account: AccountConfig, reading: AccountReading?) -> String {
+        guard let plan = reading?.planName?.trimmingCharacters(in: .whitespacesAndNewlines), !plan.isEmpty else {
+            return account.displayService
+        }
+        return account.displayService + " · " + plan
+    }
+
+    private func accountPresentation(_ account: AccountConfig) -> (symbol: String, color: Color) {
+        switch account.displayService {
+        case "Codex": return ("terminal", .primary)
+        case "Claude Code": return ("sparkle", Color(red: 0.73, green: 0.43, blue: 0.30))
+        case "Grok Build": return ("bolt", .purple)
+        case "Grok Bot", "GrokBot": return ("bubble.left.and.bubble.right", .indigo)
+        case "Cursor": return ("cursorarrow", .primary)
+        default:
+            switch account.provider {
+            case .codex: return (account.provider.symbol, .primary)
+            case .claude: return (account.provider.symbol, Color(red: 0.73, green: 0.43, blue: 0.30))
+            case .grok: return (account.provider.symbol, .purple)
+            case .snapshot: return (account.provider.symbol, .blue)
+            }
         }
     }
 
-    private func providerColor(_ provider: ProviderKind) -> Color {
-        switch provider {
-        case .codex: return .primary
-        case .claude: return Color(red: 0.73, green: 0.43, blue: 0.30)
-        case .grok: return .purple
-        case .snapshot: return .blue
-        }
-    }
 }
 
 private struct CompactMetric: Identifiable {

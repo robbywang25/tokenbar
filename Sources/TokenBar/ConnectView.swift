@@ -6,7 +6,6 @@ struct ConnectView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var provider: ProviderKind = .codex
     @State private var method: ConnectionMethod = .localFile
-    @State private var name = ""
     @State private var location = ""
     @State private var secret = ""
     @State private var sourceAccountID = ""
@@ -48,12 +47,6 @@ struct ConnectView: View {
                     Text(providerDescription)
                         .font(.subheadline).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("账号备注").font(.caption.weight(.medium))
-                        TextField("例如：个人账号、工作账号", text: $name)
-                            .textFieldStyle(.roundedBorder)
-                    }
 
                     if provider == .claude {
                         Picker("接入方式", selection: $method) {
@@ -281,11 +274,10 @@ struct ConnectView: View {
     private func connect() async {
         isConnecting = true
         errorMessage = nil
-        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedService = serviceLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         let config = AccountConfig(
             provider: provider,
-            name: trimmedName.isEmpty ? provider.title : trimmedName,
+            name: provider == .snapshot && !trimmedService.isEmpty ? trimmedService : provider.title,
             method: method,
             location: location.trimmingCharacters(in: .whitespacesAndNewlines),
             sourceAccountID: sourceAccountID.trimmingCharacters(in: .whitespacesAndNewlines),

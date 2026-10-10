@@ -221,6 +221,13 @@ struct ProviderClient {
         if let rawObserved, !(rawObserved is NSNull), observed == nil { throw ProviderError.invalidData }
         let checked = date(account["checkedAt"]) ?? date(root["collectedAt"]) ?? observed ?? now
         var result = AccountReading(status: status, checkedAt: checked, lastSuccessAt: observed)
+        if account.keys.contains("sourceCollectedAt") {
+            result.sourceCollectedAtPresent = true
+            result.sourceCollectedAt = date(account["sourceCollectedAt"])
+        } else if root.keys.contains("collectedAt") {
+            result.sourceCollectedAtPresent = true
+            result.sourceCollectedAt = date(root["collectedAt"])
+        }
         if let items = account["windows"] {
             guard let windows = items as? [[String: Any]], windows.count <= 64 else { throw ProviderError.invalidData }
             result.windows = try windows.enumerated().map { try snapshotWindow($0.element, index: $0.offset) }
@@ -236,13 +243,24 @@ struct ProviderClient {
         let profile = account["profile"] as? [String: Any]
         result.name = safeName(profile?["name"])
         result.email = safeEmail(profile?["email"])
+        result.planName = safePlanName((account["subscription"] as? [String: Any])?["planName"])
+        if let reason = account["reason"] as? String,
+           ["connected", "stale", "needs_auth", "unavailable", "not_configured", "unsupported", "expired", "network_error", "invalid_data", "duplicate", "pooled", "rate_limited", "reset_passed"].contains(reason) {
+            result.reason = reason
+        }
+        if result.reason == "rate_limited" { result.retryAt = date(account["retryAt"]) }
         if let identityValue = account["identity"] as? [String: Any], let provider = identifier(identityValue["provider"]), let id = identifier(identityValue["accountID"]) {
             result.identityKey = identity(provider: provider, accountID: id)
         } else {
             result.identityKey = identity(provider: "snapshot", accountID: source + "\u{0}" + (accountID(account) ?? sourceAccountID))
         }
-        if status == .connected && !result.isFresh(at: now) { result.status = .stale }
-        let reason = account["reason"] as? String
+        if status == .connected && !result.isFresh(at: now) {
+            result.status = .stale
+            if result.reason == nil || result.reason == "connected" {
+                result.reason = result.visibleWindows.contains(where: { ($0.resetsAt ?? .distantFuture) <= now }) ? "reset_passed" : "stale"
+            }
+        }
+        let reason = result.reason
         switch result.status {
         case .connected: result.detail = ""
         case .stale: result.detail = "来源读数已过期，等待数据源更新。"
@@ -253,25 +271,37 @@ struct ProviderClient {
             result.detail = reason == "duplicate" ? ProviderError.duplicate.message : reason == "unsupported" ? ProviderError.unsupported.message : "尚未配置此账号的独立额度来源。"
         case .unsupported: result.detail = ProviderError.unsupported.message
         }
+        // Reason messages are a fixed projection, including when historical
+        // quota data is retained. Never copy an upstream detail/error body.
+        switch reason {
+        case "rate_limited": result.detail = "平台暂时限流，等待重试。"
+        case "reset_passed": result.detail = "已到平台提供的刷新时间，等待新读数确认。"
+        case "invalid_data": result.detail = ProviderError.invalidData.message
+        case "network_error":
+            result.detail = result.lastSuccessAt != nil && hasQuota ? "额度来源暂时无法连接，显示上次成功读数。" : "额度来源暂时无法连接。"
+        case "expired": result.detail = ProviderError.needsAuth.message
+        default: break
+        }
         return result
     }
 
     private static func snapshotWindow(_ value: [String: Any], index: Int) throws -> QuotaWindow {
-        let percent = value["remainingPercent"] == nil || value["remainingPercent"] is NSNull ? nil : try percentage(value["remainingPercent"])
+        let unlimited = boolean(value["unlimited"]) == true
+        var percent = unlimited || value["remainingPercent"] == nil || value["remainingPercent"] is NSNull ? nil : try percentage(value["remainingPercent"])
         func optionalAmount(_ key: String) throws -> Double? {
             guard let raw = value[key], !(raw is NSNull) else { return nil }
-            guard let amount = number(raw), amount >= 0 else { throw ProviderError.invalidData }
+            guard let amount = number(raw), amount >= 0, amount <= 9_007_199_254_740_991 else { throw ProviderError.invalidData }
             return amount
         }
-        let remaining = try optionalAmount("remaining"), limit = try optionalAmount("limit")
+        let remaining = unlimited ? nil : try optionalAmount("remaining"), limit = unlimited ? nil : try optionalAmount("limit")
         if let remaining, let limit, remaining > limit { throw ProviderError.invalidData }
-        let unlimited = boolean(value["unlimited"]) == true
+        if percent == nil, let remaining, let limit, limit > 0 { percent = 100 * remaining / limit }
         guard percent != nil || remaining != nil || unlimited else { throw ProviderError.invalidData }
         let id = identifier(value["id"]) ?? "window-\(index + 1)"
         let group = value["quotaGroup"] as? String ?? value["group"] as? String ?? "default"
         guard ["default", "reserve", "code-review", "additional"].contains(group) else { throw ProviderError.invalidData }
         let unit = value["unit"] as? String ?? "percent"
-        guard ["percent", "tokens", "messages", "credits", "USD"].contains(unit) else { throw ProviderError.invalidData }
+        guard ["percent", "tokens", "requests", "messages", "credits", "USD"].contains(unit) else { throw ProviderError.invalidData }
         return QuotaWindow(id: id, label: safeName(value["label"]) ?? label(id, seconds: number(value["windowSeconds"])), remainingPercent: percent, remaining: remaining, limit: limit, unit: unit, resetsAt: date(value["resetsAt"]), startsAt: date(value["startsAt"]), group: group, model: identifier(value["model"]), unlimited: unlimited)
     }
 
@@ -312,6 +342,13 @@ struct ProviderClient {
               value.range(of: "^[\\p{L}\\p{N} .·（）()_+/-]+$", options: .regularExpression) != nil,
               value.range(of: "bearer|secret|eyJ|sk-", options: [.caseInsensitive, .regularExpression]) == nil else { return nil }
         return value
+    }
+    private static func safePlanName(_ value: Any?) -> String? {
+        guard let value = value as? String, (1...64).contains(value.count),
+              value.range(of: "\\A[\\p{L}\\p{N} .·()_+/-]+\\z", options: .regularExpression) != nil,
+              value.range(of: "secret|bearer|eyJ|sk-", options: [.caseInsensitive, .regularExpression]) == nil else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? nil : trimmed
     }
     private static func safeEmail(_ value: Any?) -> String? {
         guard let value = value as? String, value.count <= 254,

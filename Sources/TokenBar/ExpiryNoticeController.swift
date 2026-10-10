@@ -54,27 +54,27 @@ final class ExpiryNoticeController {
 private struct ExpiryNoticeView: View {
     let notice: ExpiryNotice
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "hourglass")
-                .font(.system(size: 20, weight: .medium)).foregroundStyle(.orange)
-                .frame(width: 34)
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text(notice.accountName).font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                    Spacer(minLength: 4)
-                    Text("剩余 \(notice.remainingPercent.formatted(.number.precision(.fractionLength(0...1))))%")
-                        .font(.system(size: 13, weight: .semibold, design: .rounded)).foregroundStyle(.red)
-                }
-                Text("\(notice.serviceLabel) · \(notice.windowLabel)")
-                    .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-                Text("\(timeRemaining)后重置")
+        VStack(alignment: .leading, spacing: 5) {
+            Text(notice.accountName)
+                .font(.system(size: 14, weight: .semibold))
+                .lineLimit(2).truncationMode(.middle)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .help(notice.accountName)
+            HStack(spacing: 7) {
+                Text("剩余 \(notice.remainingPercent.formatted(.number.precision(.fractionLength(0...1))))%")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded)).foregroundStyle(.red)
+                Text("· \(timeRemaining)后重置")
                     .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
             }
+            Text("\(notice.serviceLabel) · \(notice.windowLabel)")
+                .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
         }
         .padding(.horizontal, 15).frame(width: 318, height: 88)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.primary.opacity(0.08)))
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(notice.accountName)，\(notice.serviceLabel)，\(notice.windowLabel)，剩余 \(notice.remainingPercent.formatted(.number.precision(.fractionLength(0...1))))%，\(timeRemaining)后重置")
     }
     private var timeRemaining: String {
         let minutes = max(1, Int(ceil(notice.resetsAt.timeIntervalSinceNow / 60)))

@@ -126,6 +126,13 @@ struct AccountReading: Codable, Equatable {
     var detail: String = ""
     // Hash only; used to reject duplicate identities. Never persist a credential.
     var identityKey: String? = nil
+    // Optional fields keep existing locally cached readings decodable.
+    var planName: String? = nil
+    var sourceCollectedAt: Date? = nil
+    // A present-but-null/invalid source timestamp must not become a fresh legacy read.
+    var sourceCollectedAtPresent: Bool? = nil
+    var reason: String? = nil
+    var retryAt: Date? = nil
 
     var visibleWindows: [QuotaWindow] { windows.filter(\.isVisibleInUI) }
     var hasVisibleSupplementalQuota: Bool { credits != nil || unlimitedCredits || resetCardsAvailable != nil }
@@ -134,6 +141,10 @@ struct AccountReading: Codable, Equatable {
     func isFresh(at now: Date, maxAge: TimeInterval = 120) -> Bool {
         guard status == .connected, let success = lastSuccessAt,
               success <= now.addingTimeInterval(60), now.timeIntervalSince(success) <= maxAge else { return false }
+        if sourceCollectedAtPresent == true || sourceCollectedAt != nil {
+            guard let source = sourceCollectedAt, source <= now.addingTimeInterval(60),
+                  now.timeIntervalSince(source) <= maxAge else { return false }
+        }
         return !visibleWindows.contains { ($0.resetsAt ?? .distantFuture) <= now }
     }
     func displayStatus(at now: Date) -> ReadingStatus {
