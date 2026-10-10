@@ -12,7 +12,9 @@ struct DashboardView: View {
             header
             Divider()
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
+                // The source list is bounded to 30 accounts. Eager layout avoids
+                // lazy height estimation feeding back into wrapping card sizes.
+                VStack(alignment: .leading, spacing: 12) {
                     if store.isDemo { demoBanner }
                     if let message = store.errorMessage, !message.isEmpty {
                         Label(message, systemImage: "exclamationmark.circle")
@@ -583,54 +585,4 @@ private struct CompactMetric: Identifiable {
     let label: String
     let value: String
     var color: Color = .primary
-}
-
-private struct MetricFlowLayout: Layout {
-    let horizontalSpacing: CGFloat
-    let verticalSpacing: CGFloat
-
-    struct Cache {
-        var sizes: [CGSize]
-    }
-
-    func makeCache(subviews: Subviews) -> Cache {
-        Cache(sizes: subviews.map { $0.sizeThatFits(.unspecified) })
-    }
-
-    func updateCache(_ cache: inout Cache, subviews: Subviews) {
-        cache.sizes = subviews.map { $0.sizeThatFits(.unspecified) }
-    }
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
-        arrangement(cache.sizes, width: proposal.width ?? .infinity).size
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
-        let result = arrangement(cache.sizes, width: bounds.width)
-        for (index, subview) in subviews.enumerated() {
-            let origin = result.origins[index]
-            subview.place(at: CGPoint(x: bounds.minX + origin.x, y: bounds.minY + origin.y),
-                          anchor: .topLeading, proposal: ProposedViewSize(cache.sizes[index]))
-        }
-    }
-
-    private func arrangement(_ sizes: [CGSize], width: CGFloat) -> (size: CGSize, origins: [CGPoint]) {
-        var x: CGFloat = 0
-        var y: CGFloat = 0
-        var rowHeight: CGFloat = 0
-        var usedWidth: CGFloat = 0
-        var origins: [CGPoint] = []
-        for size in sizes {
-            if x > 0, x + size.width > width {
-                x = 0
-                y += rowHeight + verticalSpacing
-                rowHeight = 0
-            }
-            origins.append(CGPoint(x: x, y: y))
-            usedWidth = max(usedWidth, x + size.width)
-            rowHeight = max(rowHeight, size.height)
-            x += size.width + horizontalSpacing
-        }
-        return (CGSize(width: usedWidth, height: y + rowHeight), origins)
-    }
 }
