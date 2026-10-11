@@ -61,7 +61,8 @@ extension AppStore {
                 } else { continue }
                 let title = window.title + (window.model.map { " · " + $0 } ?? "")
                 let label = Self.widgetText(title, maximum: 80) ?? "额度"
-                projected.append((TokenBarWidgetMetric(id: "window-\(index)", label: label, value: value, remainingPercent: percent),
+                let reset = window.resetsAt.flatMap { Self.widgetDate($0) ? $0 : nil }
+                projected.append((TokenBarWidgetMetric(id: "window-\(index)", label: label, value: value, remainingPercent: percent, resetsAt: reset),
                                   selection.contains(MenuQuotaMetric.selectionID(accountID: account.id, windowID: window.id))))
             }
             if reading.unlimitedCredits || reading.credits.map(Self.widgetAmount) == true {

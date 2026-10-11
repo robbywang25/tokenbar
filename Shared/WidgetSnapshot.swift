@@ -122,12 +122,14 @@ public struct TokenBarWidgetMetric: Codable, Equatable, Identifiable, Sendable {
     public var label: String
     public var value: String
     public var remainingPercent: Double?
+    public var resetsAt: Date? = nil
 
-    public init(id: String, label: String, value: String, remainingPercent: Double?) {
+    public init(id: String, label: String, value: String, remainingPercent: Double?, resetsAt: Date? = nil) {
         self.id = id
         self.label = label
         self.value = value
         self.remainingPercent = remainingPercent
+        self.resetsAt = resetsAt
     }
 }
 
@@ -168,6 +170,7 @@ public extension TokenBarWidgetSnapshot {
             for metric in account.metrics {
                 guard metric.id.range(of: "\\A[a-z0-9-]{1,64}\\z", options: .regularExpression) != nil,
                       Self.safeText(metric.label, maximum: 80), metric.value.count <= 64,
+                      metric.resetsAt.map(Self.validDate) ?? true,
                       metric.value.range(of: "\\A(?:∞|不限量|—|[0-9]+(?:\\.[0-9]+)?(?:%| (?:tokens|requests|messages|credits|USD|张|点))?)\\z", options: .regularExpression) != nil,
                       metric.remainingPercent.map({ $0.isFinite && (0...100).contains($0) }) ?? true else { throw TokenBarWidgetSnapshotError.invalidSnapshot }
             }

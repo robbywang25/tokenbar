@@ -6,6 +6,83 @@ import TokenBarWidgetShared
 final class WidgetSnapshotTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_791_676_800)
 
+    func testLegacyMetricWithoutResetDateDecodesAndOptionalDateRoundTrips() throws {
+        let old = validSnapshot()
+        let encoded = try JSONEncoder().encode(old)
+        XCTAssertFalse(String(data: encoded, encoding: .utf8)!.contains("resetsAt"))
+        let decoded = try JSONDecoder().decode(TokenBarWidgetSnapshot.self, from: encoded)
+        XCTAssertNil(decoded.accounts[0].metrics[0].resetsAt)
+        XCTAssertNoThrow(try decoded.validate())
+        var updated = old
+        updated.accounts[0].metrics[0].resetsAt = now.addingTimeInterval(3600)
+        let restored = try JSONDecoder().decode(TokenBarWidgetSnapshot.self, from: JSONEncoder().encode(updated))
+        XCTAssertEqual(restored.accounts[0].metrics[0].resetsAt, now.addingTimeInterval(3600))
+        XCTAssertNoThrow(try restored.validate())
+    }
+
+    @MainActor
+    func testProjectionCarriesEachWindowResetWithoutStartOrBorrowingDateForCredits() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let store = fixture.store()
+        let config = account("Fixture")
+        let shortReset = now.addingTimeInterval(3600), weeklyReset = now.addingTimeInterval(259_200)
+        store.accounts = [config]
+        store.readings[config.id] = AccountReading(status: .connected, checkedAt: now, lastSuccessAt: now,
+            windows: [QuotaWindow(id: "short", label: "5 小时", remainingPercent: 60, resetsAt: shortReset),
+                      QuotaWindow(id: "weekly", label: "每周", remainingPercent: 40, resetsAt: weeklyReset),
+                      QuotaWindow(id: "unknown", label: "其他", remainingPercent: 30)])
+        var snapshot = try XCTUnwrap(store.widgetSnapshot(at: now))
+        try snapshot.validate()
+        XCTAssertEqual(snapshot.accounts[0].metrics.map(\.resetsAt), [shortReset, weeklyReset, nil])
+        XCTAssertNil(snapshot.accounts[0].urgencyWindow, "Missing cycle start does not prevent displaying an explicit reset date.")
+        store.readings[config.id]?.credits = 125.5
+        snapshot = try XCTUnwrap(store.widgetSnapshot(at: now))
+        try snapshot.validate()
+        XCTAssertEqual(snapshot.accounts[0].metrics.map(\.id), ["window-0", "window-1", "credits"])
+        XCTAssertEqual(snapshot.accounts[0].metrics.map(\.resetsAt), [shortReset, weeklyReset, nil])
+    }
+
+    @MainActor
+    func testHistoricalResetDateIsPreservedButUnknownObservationCannotExposeOne() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let store = fixture.store()
+        let config = account("Fixture")
+        let expiredReset = now.addingTimeInterval(-60)
+        store.accounts = [config]
+        store.readings[config.id] = AccountReading(status: .connected, checkedAt: now, lastSuccessAt: now.addingTimeInterval(-600),
+            windows: [QuotaWindow(id: "weekly", label: "每周", remainingPercent: 40, resetsAt: expiredReset)], credits: 10)
+        var snapshot = try XCTUnwrap(store.widgetSnapshot(at: now))
+        try snapshot.validate()
+        XCTAssertEqual(snapshot.accounts[0].status, .stale)
+        XCTAssertEqual(snapshot.accounts[0].metrics.first?.resetsAt, expiredReset)
+        XCTAssertNil(snapshot.accounts[0].metrics.first(where: { $0.id == "credits" })?.resetsAt)
+        XCTAssertFalse(snapshot.accounts[0].isFresh(at: now))
+        store.readings[config.id]?.status = .needsAuth
+        store.readings[config.id]?.lastSuccessAt = nil
+        snapshot = try XCTUnwrap(store.widgetSnapshot(at: now))
+        XCTAssertTrue(snapshot.accounts[0].metrics.isEmpty)
+        XCTAssertNil(snapshot.accounts[0].observedAt)
+    }
+
+    @MainActor
+    func testInvalidOptionalResetDateIsRejectedOnReadAndDroppedDuringProjection() throws {
+        var invalid = validSnapshot()
+        invalid.accounts[0].metrics[0].resetsAt = .distantFuture
+        XCTAssertThrowsError(try invalid.validate())
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let store = fixture.store()
+        let config = account("Fixture")
+        store.accounts = [config]
+        store.readings[config.id] = AccountReading(status: .connected, checkedAt: now, lastSuccessAt: now,
+            windows: [QuotaWindow(id: "weekly", label: "每周", remainingPercent: 40, resetsAt: .distantFuture)])
+        let snapshot = try XCTUnwrap(store.widgetSnapshot(at: now))
+        XCTAssertNil(snapshot.accounts[0].metrics[0].resetsAt)
+        XCTAssertNoThrow(try snapshot.validate())
+    }
+
     @MainActor
     func testProjectionIncludesOnlyDisplayFieldsAndNeverPrivateInputs() throws {
         let fixture = try Fixture()

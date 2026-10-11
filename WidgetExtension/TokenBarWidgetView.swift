@@ -52,30 +52,35 @@ struct TokenBarWidgetView: View {
     }
 
     private func smallAccount(_ account: TokenBarWidgetAccount) -> some View {
-        let fresh = account.isFresh(at: entry.date)
         let metrics = account.displayMetrics()
-        return VStack(alignment: .leading, spacing: 2) {
-            heading
+        return VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 4) {
+                Text("TokenBar").font(.system(size: 10, weight: .semibold, design: .rounded))
+                Spacer(minLength: 0)
+                Text(service(account)).font(.system(size: 8)).foregroundStyle(.secondary).lineLimit(1)
+            }
             Text(identity(account)).font(.system(size: 12, weight: .semibold))
                 .lineLimit(2).truncationMode(.middle)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 2)
-            Text(service(account)).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
             urgencyLine(account, fontSize: 9)
             Spacer(minLength: 0)
             if let primary = metrics.first {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text(primary.label).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                     metricValue(primary, account: account, prominent: true)
                 }
-                quotaBar(primary, fresh: fresh)
+                resetTime(primary, account: account, fontSize: 8, compact: false)
                 if metrics.count > 1 {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
                         Text(metrics[1].label).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+                            .fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 0)
                         metricValue(metrics[1], account: account, prominent: false)
                     }
+                    resetTime(metrics[1], account: account, fontSize: 8, compact: false)
                 }
             } else {
                 Text("—").font(.system(size: 26, weight: .medium, design: .rounded)).foregroundStyle(.secondary)
@@ -113,16 +118,25 @@ struct TokenBarWidgetView: View {
                         .foregroundStyle(.secondary).lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                HStack(alignment: .top, spacing: 8) {
+                HStack(alignment: .top, spacing: 6) {
                     if metrics.isEmpty {
                         Text("—").font(.system(size: 20, weight: .medium, design: .rounded)).foregroundStyle(.secondary)
                     } else {
                         ForEach(metrics) { metric in
                             VStack(alignment: .trailing, spacing: 2) {
-                                metricValue(metric, account: account, prominent: false)
-                                Text(metric.label).font(.system(size: 8)).foregroundStyle(.secondary).lineLimit(1)
+                                if metric.id == "credits" {
+                                    metricValue(metric, account: account, prominent: false)
+                                    Text(metric.label).font(.system(size: 8)).foregroundStyle(.secondary).lineLimit(1)
+                                } else {
+                                    HStack(alignment: .firstTextBaseline, spacing: 3) {
+                                        Text(metric.label).font(.system(size: 8)).foregroundStyle(.secondary)
+                                            .lineLimit(1).minimumScaleFactor(0.8)
+                                        metricValue(metric, account: account, prominent: false)
+                                    }
+                                    resetTime(metric, account: account, fontSize: 8, compact: true)
+                                }
                             }
-                            .frame(width: 66, alignment: .trailing)
+                            .frame(width: 78, alignment: .trailing)
                         }
                     }
                 }
@@ -139,6 +153,50 @@ struct TokenBarWidgetView: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilitySummary(account))
+    }
+
+    @ViewBuilder
+    private func resetTime(_ metric: TokenBarWidgetMetric, account: TokenBarWidgetAccount,
+                           fontSize: CGFloat, compact: Bool) -> some View {
+        // Points have no declared reset cycle. Never borrow the account's
+        // urgency window or another displayed metric's reset timestamp.
+        if metric.id != "credits" {
+            HStack(spacing: 2) {
+                if compact {
+                    Image(systemName: "arrow.clockwise").font(.system(size: fontSize - 1))
+                } else {
+                    Text("重置")
+                }
+                Text(resetDate(metric.resetsAt))
+            }
+            .font(.system(size: fontSize)).monospacedDigit().foregroundStyle(.secondary)
+            .lineLimit(1).minimumScaleFactor(compact ? 0.85 : 1)
+            .accessibilityLabel(resetAccessibility(metric, account: account))
+        }
+    }
+
+    private func resetDate(_ date: Date?) -> String {
+        guard let date else { return "—" }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .autoupdatingCurrent
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: entry.date)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = calendar
+        formatter.timeZone = .autoupdatingCurrent
+        formatter.dateFormat = sameYear ? "M/d HH:mm" : "yyyy/M/d HH:mm"
+        return formatter.string(from: date)
+    }
+
+    private func resetAccessibility(_ metric: TokenBarWidgetMetric, account: TokenBarWidgetAccount) -> String {
+        guard let date = metric.resetsAt else { return metric.label + "，重置时间未知" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = .autoupdatingCurrent
+        formatter.dateFormat = "yyyy年M月d日 HH:mm zzzz"
+        let prefix = account.isFresh(at: entry.date) ? "重置时间 " : "上次记录的重置时间 "
+        return metric.label + "，" + prefix + formatter.string(from: date)
     }
 
     @ViewBuilder
@@ -193,21 +251,6 @@ struct TokenBarWidgetView: View {
         .monospacedDigit().lineLimit(1).minimumScaleFactor(0.75)
     }
 
-    @ViewBuilder
-    private func quotaBar(_ metric: TokenBarWidgetMetric, fresh: Bool) -> some View {
-        if fresh, let percent = metric.remainingPercent {
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.primary.opacity(0.06))
-                    Capsule().fill(valueColor(percent).opacity(0.65))
-                        .frame(width: geometry.size.width * max(0, min(100, percent)) / 100)
-                }
-            }
-            .frame(height: 2)
-            .accessibilityHidden(true)
-        }
-    }
-
     private func identity(_ account: TokenBarWidgetAccount) -> String { account.email ?? "邮箱待确认" }
 
     private func service(_ account: TokenBarWidgetAccount) -> String {
@@ -235,7 +278,8 @@ struct TokenBarWidgetView: View {
         let metrics = account.displayMetrics().map { metric in
             let value = fresh || account.observedAt != nil ? metric.value : "—"
             let historical = !fresh && account.observedAt != nil && value != "—"
-            return metric.label + "，" + (historical ? "上次 " : "") + value
+            let reset = metric.id == "credits" ? "" : "，" + resetAccessibility(metric, account: account)
+            return metric.label + "，" + (historical ? "上次 " : "") + value + reset
         }.joined(separator: "，")
         let cards = account.resetCardsLabel(at: entry.date).map { "，" + $0 } ?? ""
         let urgency: String

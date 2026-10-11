@@ -97,9 +97,11 @@ enum TokenBarWidgetPreview {
                 email: email, provider: providers[index], plan: index == 0 ? "Pro" : nil,
                 status: .connected, observedAt: date.addingTimeInterval(-20), freshUntil: date.addingTimeInterval(100),
                 metrics: [
-                    TokenBarWidgetMetric(id: "weekly", label: "每周", value: "\(Int(percentages[index]))%", remainingPercent: percentages[index]),
+                    TokenBarWidgetMetric(id: "weekly", label: "每周", value: "\(Int(percentages[index]))%", remainingPercent: percentages[index],
+                                         resetsAt: date.addingTimeInterval(daysRemaining[index] * 86_400)),
                     TokenBarWidgetMetric(id: index == 0 ? "credits" : "secondary", label: index == 0 ? "点数" : "5 小时",
-                                         value: index == 0 ? "44700 点" : "86%", remainingPercent: index == 0 ? nil : 86)
+                                         value: index == 0 ? "44700 点" : "86%", remainingPercent: index == 0 ? nil : 86,
+                                         resetsAt: index == 0 ? nil : date.addingTimeInterval(Double(index + 1) * 1_800))
                 ],
                 resetCards: index == 0 ? 2 : index == 4 ? 0 : nil,
                 urgencyWindow: QuotaUrgencyWindow(label: "每周", remainingPercent: percentages[index],
