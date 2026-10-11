@@ -5,8 +5,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="${TOKENBAR_DIST_DIR:-$ROOT_DIR/dist}"
 SIGN_IDENTITY="${TOKENBAR_SIGN_IDENTITY:--}"
-VERSION="${TOKENBAR_VERSION:-0.2.0}"
-BUILD_NUMBER="${TOKENBAR_BUILD_NUMBER:-9}"
+VERSION="${TOKENBAR_VERSION:-0.2.1}"
+BUILD_NUMBER="${TOKENBAR_BUILD_NUMBER:-10}"
 ARCHS=()
 WITH_WIDGET=false
 
@@ -20,8 +20,8 @@ The default builds for this Mac and signs ad hoc for local use.
 Developer ID Application signing identity. Ad-hoc builds stay menu-bar-only.
 
 Optional environment variables:
-  TOKENBAR_VERSION          Marketing version (default: 0.2.0)
-  TOKENBAR_BUILD_NUMBER     Bundle build number (default: 9)
+  TOKENBAR_VERSION          Marketing version (default: 0.2.1)
+  TOKENBAR_BUILD_NUMBER     Bundle build number (default: 10)
   TOKENBAR_DIST_DIR         Output directory (default: ./dist)
   TOKENBAR_SIGN_IDENTITY    Apple Development / Developer ID Application; default: -
 

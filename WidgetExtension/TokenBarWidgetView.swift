@@ -53,8 +53,8 @@ struct TokenBarWidgetView: View {
 
     private func smallAccount(_ account: TokenBarWidgetAccount) -> some View {
         let fresh = account.isFresh(at: entry.date)
-        let metrics = Array(account.metrics.prefix(2))
-        return VStack(alignment: .leading, spacing: 5) {
+        let metrics = account.displayMetrics()
+        return VStack(alignment: .leading, spacing: 4) {
             heading
             Text(identity(account)).font(.system(size: 12, weight: .semibold))
                 .lineLimit(2).truncationMode(.middle)
@@ -80,8 +80,12 @@ struct TokenBarWidgetView: View {
                 Text("—").font(.system(size: 26, weight: .medium, design: .rounded)).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
-            Text(observation(account)).font(.system(size: 9)).foregroundStyle(.secondary)
-                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .lastTextBaseline, spacing: 4) {
+                Text(observation(account)).font(.system(size: 8)).foregroundStyle(.secondary)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                resetCardBadge(account)
+            }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilitySummary(account))
@@ -99,12 +103,15 @@ struct TokenBarWidgetView: View {
 
     private func accountRow(_ account: TokenBarWidgetAccount, compact: Bool) -> some View {
         let fresh = account.isFresh(at: entry.date)
-        let metrics = Array(account.metrics.prefix(2))
+        let metrics = account.displayMetrics()
         return VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(identity(account)).font(.system(size: compact ? 11 : 12, weight: .semibold))
-                        .lineLimit(1).truncationMode(.middle)
+                    HStack(spacing: 4) {
+                        Text(identity(account)).font(.system(size: compact ? 11 : 12, weight: .semibold))
+                            .lineLimit(1).truncationMode(.middle)
+                        if compact { resetCardBadge(account) }
+                    }
                     if compact {
                         HStack(spacing: 5) {
                             Text(service(account)).lineLimit(1)
@@ -113,7 +120,11 @@ struct TokenBarWidgetView: View {
                         .font(.system(size: 8)).foregroundStyle(.secondary)
                     } else {
                         Text(service(account)).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
-                        Text(observation(account)).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+                        HStack(spacing: 4) {
+                            Text(observation(account)).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+                            Spacer(minLength: 0)
+                            resetCardBadge(account)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -136,6 +147,15 @@ struct TokenBarWidgetView: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilitySummary(account))
+    }
+
+    @ViewBuilder
+    private func resetCardBadge(_ account: TokenBarWidgetAccount) -> some View {
+        if let label = account.resetCardsLabel(at: entry.date) {
+            Text(label).font(.system(size: 8, weight: .medium))
+                .foregroundStyle(account.isFresh(at: entry.date) ? Color.primary : Color.secondary)
+                .monospacedDigit().fixedSize(horizontal: true, vertical: false)
+        }
     }
 
     private func metricValue(_ metric: TokenBarWidgetMetric, account: TokenBarWidgetAccount, prominent: Bool) -> some View {
@@ -190,12 +210,13 @@ struct TokenBarWidgetView: View {
 
     private func accessibilitySummary(_ account: TokenBarWidgetAccount) -> String {
         let fresh = account.isFresh(at: entry.date)
-        let metrics = account.metrics.prefix(2).map { metric in
+        let metrics = account.displayMetrics().map { metric in
             let value = fresh || account.observedAt != nil ? metric.value : "—"
             let historical = !fresh && account.observedAt != nil && value != "—"
             return metric.label + "，" + (historical ? "上次 " : "") + value
         }.joined(separator: "，")
-        return identity(account) + "，" + service(account) + "，" + metrics + "，" + observation(account)
+        let cards = account.resetCardsLabel(at: entry.date).map { "，" + $0 } ?? ""
+        return identity(account) + "，" + service(account) + "，" + metrics + cards + "，" + observation(account)
     }
 }
 

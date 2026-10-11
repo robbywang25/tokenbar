@@ -81,9 +81,10 @@ enum TokenBarWidgetPreview {
                 status: .connected, observedAt: date.addingTimeInterval(-20), freshUntil: date.addingTimeInterval(100),
                 metrics: [
                     TokenBarWidgetMetric(id: "weekly", label: "每周", value: "\(Int(percentages[index]))%", remainingPercent: percentages[index]),
-                    TokenBarWidgetMetric(id: "secondary", label: index == 0 ? "点数" : "5 小时",
+                    TokenBarWidgetMetric(id: index == 0 ? "credits" : "secondary", label: index == 0 ? "点数" : "5 小时",
                                          value: index == 0 ? "44700 点" : "86%", remainingPercent: index == 0 ? nil : 86)
-                ]
+                ],
+                resetCards: index == 0 ? 2 : index == 4 ? 0 : nil
             )
         }
         return TokenBarWidgetEntry(date: date, snapshot: TokenBarWidgetSnapshot(generatedAt: date, accounts: accounts))

@@ -100,11 +100,20 @@ final class DashboardLayoutTests: XCTestCase {
         // Drive a local, hidden AppKit view tree. No window is shown and no
         // button action, provider refresh, or real application's UI is invoked.
         host.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
-        let fitting = host.fittingSize
-        host.layoutSubtreeIfNeeded()
         let scroll = try XCTUnwrap(descendants(of: host).compactMap { $0 as? NSScrollView }.first,
                                   "The real SwiftUI ScrollView must be instantiated.", file: file, line: line)
+        // The test controls only its hidden scroll view. A legacy scrollbar can
+        // otherwise reserve 17 points after scrolling begins and change the
+        // expected document width independently of the card layout under test.
+        scroll.scrollerStyle = .overlay
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        let fitting = host.fittingSize
+        // SwiftUI may recreate/configure the scroller during the transaction.
+        // Apply the fixture style after it settles, then tile immediately.
+        scroll.scrollerStyle = .overlay
+        scroll.tile()
+        host.layoutSubtreeIfNeeded()
         let document = try XCTUnwrap(scroll.documentView, file: file, line: line)
         let size = document.frame.size
         for view in descendants(of: host) + [host] {

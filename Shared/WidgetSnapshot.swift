@@ -7,6 +7,7 @@ public enum TokenBarWidgetConstants {
     public static let maximumBytes = 128 * 1_024
     public static let maximumAccounts = 30
     public static let maximumMetrics = 3
+    public static let maximumResetCards = 1_000_000
 }
 
 public enum TokenBarWidgetStatus: String, Codable, Equatable, Sendable {
@@ -45,9 +46,10 @@ public struct TokenBarWidgetAccount: Codable, Equatable, Identifiable, Sendable 
     public var observedAt: Date?
     public var freshUntil: Date?
     public var metrics: [TokenBarWidgetMetric]
+    public var resetCards: Int? = nil
 
     public init(id: UUID, email: String?, provider: String, plan: String?, status: TokenBarWidgetStatus,
-                observedAt: Date?, freshUntil: Date?, metrics: [TokenBarWidgetMetric]) {
+                observedAt: Date?, freshUntil: Date?, metrics: [TokenBarWidgetMetric], resetCards: Int? = nil) {
         self.id = id
         self.email = email
         self.provider = provider
@@ -56,6 +58,23 @@ public struct TokenBarWidgetAccount: Codable, Equatable, Identifiable, Sendable 
         self.observedAt = observedAt
         self.freshUntil = freshUntil
         self.metrics = metrics
+        self.resetCards = resetCards
+    }
+
+    /// Keep reset cards independent and reserve the second visual slot for points.
+    /// Old snapshots may still contain a reset-cards metric; do not repeat it.
+    public func displayMetrics(limit: Int = 2) -> [TokenBarWidgetMetric] {
+        let visible = metrics.filter { $0.id != "reset-cards" }
+        guard limit > 0 else { return [] }
+        guard limit > 1, let credits = visible.first(where: { $0.id == "credits" }),
+              let quota = visible.first(where: { $0.id != "credits" }) else { return Array(visible.prefix(limit)) }
+        let remainder = visible.filter { $0.id != quota.id && $0.id != credits.id }
+        return Array(([quota, credits] + remainder).prefix(limit))
+    }
+
+    public func resetCardsLabel(at now: Date) -> String? {
+        guard observedAt != nil, let resetCards, (0...TokenBarWidgetConstants.maximumResetCards).contains(resetCards) else { return nil }
+        return (isFresh(at: now) ? "重置卡 " : "上次重置卡 ") + String(resetCards)
     }
 
     /// A host write cannot extend a provider observation's lifetime. The widget
@@ -103,6 +122,7 @@ public extension TokenBarWidgetSnapshot {
                   account.observedAt.map(Self.validDate) ?? true,
                   account.freshUntil.map(Self.validDate) ?? true,
                   account.metrics.count <= TokenBarWidgetConstants.maximumMetrics,
+                  account.resetCards.map({ (0...TokenBarWidgetConstants.maximumResetCards).contains($0) }) ?? true,
                   Set(account.metrics.map(\.id)).count == account.metrics.count else { throw TokenBarWidgetSnapshotError.invalidSnapshot }
             if let until = account.freshUntil {
                 guard let observed = account.observedAt, until <= observed.addingTimeInterval(120) else { throw TokenBarWidgetSnapshotError.invalidSnapshot }
@@ -110,7 +130,9 @@ public extension TokenBarWidgetSnapshot {
             if account.status == .connected {
                 guard account.observedAt != nil, account.freshUntil != nil else { throw TokenBarWidgetSnapshotError.invalidSnapshot }
             }
-            if account.observedAt == nil && !account.metrics.isEmpty { throw TokenBarWidgetSnapshotError.invalidSnapshot }
+            if account.observedAt == nil && (!account.metrics.isEmpty || account.resetCards != nil) {
+                throw TokenBarWidgetSnapshotError.invalidSnapshot
+            }
             for metric in account.metrics {
                 guard metric.id.range(of: "\\A[a-z0-9-]{1,64}\\z", options: .regularExpression) != nil,
                       Self.safeText(metric.label, maximum: 80), metric.value.count <= 64,

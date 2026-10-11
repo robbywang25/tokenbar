@@ -37,6 +37,7 @@ extension AppStore {
         }
 
         var projected: [(metric: TokenBarWidgetMetric, selected: Bool)] = []
+        var resetCards: Int?
         if let reading, observed != nil {
             for (index, window) in reading.visibleWindows.enumerated() {
                 let value: String
@@ -60,14 +61,20 @@ extension AppStore {
                 let value = reading.unlimitedCredits ? "∞" : Self.widgetNumber(reading.credits!, digits: 2) + " 点"
                 projected.append((TokenBarWidgetMetric(id: "credits", label: "剩余点数", value: value, remainingPercent: nil), selected))
             }
-            if let count = reading.resetCardsAvailable, count >= 0 {
-                projected.append((TokenBarWidgetMetric(id: "reset-cards", label: "重置卡", value: "\(count) 张", remainingPercent: nil), false))
+            if let count = reading.resetCardsAvailable, (0...TokenBarWidgetConstants.maximumResetCards).contains(count) {
+                resetCards = count
             }
         }
         let ordered = projected.filter(\.selected) + projected.filter { !$0.selected }
+        var metrics = Array(ordered.prefix(TokenBarWidgetConstants.maximumMetrics).map(\.metric))
+        // Keep the selected quota order, but never lose known points behind three windows.
+        if let credits = projected.first(where: { $0.metric.id == "credits" })?.metric,
+           !metrics.contains(where: { $0.id == "credits" }) {
+            metrics = Array(metrics.prefix(TokenBarWidgetConstants.maximumMetrics - 1)) + [credits]
+        }
         return TokenBarWidgetAccount(id: account.id, email: AccountEmail.validated(accountEmail(account)), provider: provider, plan: plan,
                                      status: status, observedAt: observed, freshUntil: freshUntil,
-                                     metrics: Array(ordered.prefix(TokenBarWidgetConstants.maximumMetrics).map(\.metric)))
+                                     metrics: metrics, resetCards: resetCards)
     }
 
     private static func widgetDate(_ date: Date) -> Bool {
