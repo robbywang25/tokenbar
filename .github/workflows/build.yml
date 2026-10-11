@@ -15,6 +15,14 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Test provider parsing and quota behavior
         run: swift test
+      - name: Check WidgetKit extension source without signing credentials
+        run: |
+          SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
+          for arch in arm64 x86_64; do
+            xcrun swiftc -typecheck -parse-as-library -application-extension \
+              -sdk "$SDK_PATH" -target "$arch-apple-macos14.0" \
+              Shared/*.swift WidgetExtension/*.swift
+          done
       - name: Build universal preview artifacts
         run: scripts/package-release.sh --universal --no-dmg
       - name: Verify menu-bar-only app bundle
