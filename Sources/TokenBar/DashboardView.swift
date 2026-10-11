@@ -443,6 +443,16 @@ struct DashboardView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Divider()
+            if Bundle.main.object(forInfoDictionaryKey: "TokenBarAppGroup") is String {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("桌面小组件").font(.subheadline.weight(.medium))
+                    Text("桌面右键 → 编辑小组件 → TokenBar")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("优先显示菜单栏选中的账号，点按小组件打开详情。")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Divider()
+            }
             menuQuotaSettings
         }
         .font(.subheadline).padding(14)

@@ -113,6 +113,22 @@ SSH 接入使用系统 SSH 和既有的密钥或 agent，启用严格主机密�
 
 ## 开发与打包
 
+### 桌面小组件
+
+支持 WidgetKit 的签名构建可添加 macOS 桌面小组件：在桌面右键选择“编辑小组件”，搜索 `TokenBar`。小、中、大尺寸分别显示 1、3、6 个账号，菜单栏选中的账号优先。邮箱作为主标题，显示剩余比例、点数、套餐倍率和实际采集时间；点按小组件可打开 TokenBar。
+
+主程序将最小展示快照写入 App Group，扩展不读取凭据、不连接网络，也不执行 SSH。主程序需继续运行以采集新读数。WidgetKit 决定实际刷新时机；旧读数会标为“上次”，需要登录或未知状态不会变成零余额。
+
+小组件要求主程序和扩展使用同一真实 Apple 签名团队。默认 ad-hoc 构建以及现有 0.1.6 下载包仍为菜单栏版本。使用已有开发签名进行本机验证：
+
+```sh
+TOKENBAR_SIGN_IDENTITY='Apple Development' scripts/build-app.sh --universal --with-widget
+```
+
+公开分发含小组件的安装包需要 Developer ID 签名与公证。开发签名只用于本机开发验证；不要将 ad-hoc 菜单栏包标为支持桌面小组件。详见 [发布说明](RELEASE.md)。
+
+### 菜单栏预览构建
+
 ```sh
 swift test
 scripts/build-app.sh --universal

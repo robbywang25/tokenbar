@@ -1,6 +1,6 @@
 # TokenBar 发布说明
 
-项目可生成独立 macOS 应用和分发文件，但可构建不等于已通过公开发布验证。默认构建是供本机验证的 ad-hoc 签名预览版；Apple Development 证书不能替代公开分发所需的 Developer ID Application 证书。
+项目可生成独立 macOS 应用和分发文件，但可构建不等于已通过公开发布验证。默认构建是 ad-hoc 签名的菜单栏版；桌面小组件通过 `--with-widget` 显式启用，需要真实的 Apple Development 或 Developer ID Application 身份。Apple Development 用于本机开发验收，不能替代面向普通用户的 Developer ID 签名与公证。
 
 ## 1. 本地验证与预览包
 
@@ -11,22 +11,49 @@ swift test
 scripts/package-release.sh --universal
 ```
 
-生成的 Universal 应用包含 Apple silicon 和 Intel 架构，产物位于 `dist/`：
+默认生成的 Universal 菜单栏版包含 Apple silicon 和 Intel 架构，不内嵌桌面小组件；产物位于 `dist/`：
 
 - `TokenBar.app`
-- `TokenBar-0.1.0-universal.zip`
-- `TokenBar-0.1.0-universal.dmg`
-- `TokenBar-0.1.0-universal-SHA256SUMS.txt`
+- `TokenBar-0.2.0-universal.zip`
+- `TokenBar-0.2.0-universal.dmg`
+- `TokenBar-0.2.0-universal-SHA256SUMS.txt`
 
 可使用 `TOKENBAR_VERSION` 和 `TOKENBAR_BUILD_NUMBER` 设置版本，例如：
 
 ```sh
-TOKENBAR_VERSION=0.1.1 TOKENBAR_BUILD_NUMBER=2 scripts/package-release.sh --universal
+TOKENBAR_VERSION=0.2.1 TOKENBAR_BUILD_NUMBER=10 scripts/package-release.sh --universal
 ```
 
 每次正式发布应递增版本和 build number。`TOKENBAR_DIST_DIR` 可指定输出目录；默认只写入本仓库的 `dist/` 和 `.build/`。脚本不会上传文件或创建公开 release。
 
-## 2. Developer ID 签名
+## 2. 本机桌面小组件构建
+
+使用本机已有的 Apple Development 身份构建小组件，无需创建证书、注册新 App Group 或修改 Apple 账号权限。下面的姓名和证书后缀是占位值，必须替换为本机已有身份：
+
+```sh
+TOKENBAR_SIGN_IDENTITY='Apple Development: Example Developer (CERTIFICATE_SUFFIX)' \
+  scripts/build-app.sh --universal --with-widget
+```
+
+`--with-widget` 配合默认 ad-hoc 身份时会在编译前失败，避免生成无法授权共享容器的小组件包。没有开发证书的源码使用者仍可按上一节构建菜单栏版。
+
+脚本从实际代码签名读取 `TeamIdentifier`，生成 `<TeamIdentifier>.wang.robby.tokenbar` 共享组，并将同一值写入主应用及扩展的 `TokenBarAppGroup` Info.plist 字段和 App Group entitlement。证书名称括号中的后缀不一定是 Team ID，不能用它推算组名。这个 macOS 专用组名由系统核验签名团队，不要求 provisioning profile 或 Developer Portal 注册；`group.` 前缀方案具有不同的描述文件要求。参见 [Apple 的 App Group 说明](https://developer.apple.com/documentation/xcode/accessing-app-group-containers)。
+
+应用包内扩展位于 `TokenBar.app/Contents/PlugIns/TokenBarWidget.appex`，bundle ID 为 `wang.robby.tokenbar.widget`。扩展开启 App Sandbox，只接收共享快照，不获得网络、原账号凭据、SSH 或额外文件访问权限；主应用继续使用既有账号接入方式。两者版本、build number、架构和签名身份一致，先签扩展，再签外层应用。
+
+WidgetKit 扩展直接由本机 macOS SDK 编译，不需要生成 Xcode 工程。脚本采用 Xcode app-extension 产品类型的 `_NSExtensionMain` 链接入口，并设置 `com.apple.widgetkit-extension` 扩展点；普通 Swift 可执行程序的入口不是可替代的扩展打包设置。
+
+安装到 Applications 并打开主应用后，在 macOS 的“编辑小组件”中添加 TokenBar。数据更新由系统 WidgetKit 调度，不承诺与菜单栏相同的 30 秒刷新频率。主应用没有新快照时，已经过期的额度应显示为上次读数或待更新。
+
+如需保留本机开发包，可以执行：
+
+```sh
+scripts/package-release.sh --skip-build --with-widget
+```
+
+Apple Development 签名的小组件包名带有 `-widget-development`，例如 `TokenBar-0.2.0-universal-widget-development.zip`。它用于本机验收，不作为面向所有用户的签名安装包发布。正式 Developer ID 小组件包使用 `-widget` 后缀；默认菜单栏版保持不带后缀的文件名。`--skip-build` 会识别已有扩展，并验证内外签名、共享组、版本和架构；指定 `--with-widget` 但应用缺少扩展时会失败。
+
+## 3. Developer ID 签名
 
 维护者需要自己的 Apple Developer Program 账号和可用的 Developer ID Application 身份。先用以下命令列出本机可用签名身份，不要将私钥或密码写入仓库：
 
@@ -41,16 +68,16 @@ export TOKENBAR_SIGN_IDENTITY='Developer ID Application: Example Organization (T
 scripts/package-release.sh --universal
 ```
 
-脚本为应用启用 Hardened Runtime 和安全时间戳，并在打包前验证签名。DMG 也使用指定的 Developer ID 身份签名。当前程序需要读取用户明确选择的客户端凭据并运行 CLI，因此此直接分发版本没有启用 App Sandbox；它不是 Mac App Store 提交包。
+如发布包含桌面小组件的版本，在上述命令追加 `--with-widget`。脚本为应用及内嵌扩展启用 Hardened Runtime 和安全时间戳，并在打包前验证签名。DMG 也使用指定的 Developer ID 身份签名。主应用需要读取用户明确选择的客户端凭据并运行 CLI，因此未启用 App Sandbox；WidgetKit 扩展独立开启沙盒。此直接分发包不是 Mac App Store 提交包。
 
-## 3. Apple 公证与装订
+## 4. Apple 公证与装订
 
 使用 `xcrun notarytool store-credentials` 按本机工具提示，把维护者自己的公证凭据保存为 Keychain profile，例如 `TokenBar-Notary`。不要将凭据、密码或证书存入源码或 CI 日志。
 
-以下示例针对 `0.1.0` Universal 构建，其他版本需相应替换文件名。保持上一步的 `TOKENBAR_SIGN_IDENTITY` 环境变量，先公证包含签名应用的 ZIP：
+以下示例针对 `0.2.0` Universal 菜单栏版，其他版本需相应替换文件名；小组件版所有归档文件名增加 `-widget` 后缀。保持上一步的 `TOKENBAR_SIGN_IDENTITY` 环境变量，先公证包含签名应用的 ZIP：
 
 ```sh
-xcrun notarytool submit dist/TokenBar-0.1.0-universal.zip \
+xcrun notarytool submit dist/TokenBar-0.2.0-universal.zip \
   --keychain-profile TokenBar-Notary --wait
 ```
 
@@ -60,23 +87,23 @@ xcrun notarytool submit dist/TokenBar-0.1.0-universal.zip \
 xcrun stapler staple dist/TokenBar.app
 xcrun stapler validate dist/TokenBar.app
 scripts/package-release.sh --skip-build
-xcrun notarytool submit dist/TokenBar-0.1.0-universal.dmg \
+xcrun notarytool submit dist/TokenBar-0.2.0-universal.dmg \
   --keychain-profile TokenBar-Notary --wait
 ```
 
 DMG 公证也必须为 `Accepted`。随后装订 DMG 并重新生成校验文件，因为装订会改变文件内容：
 
 ```sh
-xcrun stapler staple dist/TokenBar-0.1.0-universal.dmg
-xcrun stapler validate dist/TokenBar-0.1.0-universal.dmg
+xcrun stapler staple dist/TokenBar-0.2.0-universal.dmg
+xcrun stapler validate dist/TokenBar-0.2.0-universal.dmg
 (
   cd dist
-  shasum -a 256 TokenBar-0.1.0-universal.zip TokenBar-0.1.0-universal.dmg \
-    > TokenBar-0.1.0-universal-SHA256SUMS.txt
+  shasum -a 256 TokenBar-0.2.0-universal.zip TokenBar-0.2.0-universal.dmg \
+    > TokenBar-0.2.0-universal-SHA256SUMS.txt
 )
 ```
 
-## 4. 发布验收
+## 5. 发布验收
 
 先完成签名和 Gatekeeper 检查：
 
@@ -84,7 +111,7 @@ xcrun stapler validate dist/TokenBar-0.1.0-universal.dmg
 codesign --verify --deep --strict --verbose=2 dist/TokenBar.app
 spctl --assess --type execute --verbose=2 dist/TokenBar.app
 spctl --assess --type open --context context:primary-signature --verbose=2 \
-  dist/TokenBar-0.1.0-universal.dmg
+  dist/TokenBar-0.2.0-universal.dmg
 lipo -verify_arch arm64 x86_64 dist/TokenBar.app/Contents/MacOS/TokenBar
 ```
 
@@ -100,6 +127,8 @@ lipo -verify_arch arm64 x86_64 dist/TokenBar.app/Contents/MacOS/TokenBar
 - 多账号滚动与展开流畅，秒级倒计时只更新展开详情；全局时效检查与默认 30 秒数据轮询按各自频率工作。
 - 反复打开/关闭设置、滚动到两端、展开/收起账号，并跨越至少两次自动刷新。操作停止后检查 CPU 是否回落及多轮内存是否趋于稳定；出现假死时先保留进程采样和系统诊断报告，不能仅用重启或测试通过认定修复。
 - “登录时启动”可启用和关闭；卸载说明可执行。
+- 对小组件版验证系统图库可找到 TokenBar，实际添加小、中、大尺寸后可读取共享快照；登录失败、断网和超过快照新鲜期限时正确显示未知或上次读数。点击小组件返回菜单栏界面，更新主应用后再次检查扩展签名和图库行为。
+- `pluginkit -m -v -i wang.robby.tokenbar.widget` 可作为扩展登记诊断，但登记成功不代表系统已取得 widget descriptors、可在图库选择或已在桌面渲染；这些需要分别验收。构建脚本不自动登记、添加桌面小组件或重启系统组件。
 - 在实际 Apple silicon 和 Intel Mac 上分别运行。Universal 构建和 `lipo` 检查只能证明包含两种架构，不能替代两类设备验收。
 - 发布文件及截图不含个人账号、邮箱、凭据、账单数据或私有端点。
 
@@ -107,8 +136,8 @@ lipo -verify_arch arm64 x86_64 dist/TokenBar.app/Contents/MacOS/TokenBar
 
 发布说明应明确写出已验证的系统、架构和适配器，以及仍未验证的项目。不得把单元测试通过、开发者机器运行成功或签名成功描述为所有账号都已验证。
 
-## 5. 发布与后续维护
+## 6. 发布与后续维护
 
 确认仓库许可证和版本记录齐全后，再把最终 ZIP、DMG 和校验文件上传到选定发布渠道。未经公证的安装包只作为明确标注的测试版发布。发布动作由维护者主动执行，当前脚本和 CI 都不执行公开上传。
 
-CI 在 macOS runner 上运行测试、构建 Universal 预览 ZIP，并检查签名结构、菜单栏模式及架构。CI 不使用真实账号、不持有发布证书，也不提交 Apple 公证。服务商兼容接口发生变化时，应先用脱敏 fixture 更新解析与测试，再验证用户实际登录的只读访问。
+CI 在 macOS runner 上运行测试、构建默认 Universal 菜单栏预览 ZIP，并检查签名结构、菜单栏模式及架构。CI 不使用真实账号、不持有发布证书，也不提交 Apple 公证；因此 CI 的默认归档不能当成已验收的小组件版本。服务商兼容接口发生变化时，应先用脱敏 fixture 更新解析与测试，再验证用户实际登录的只读访问。

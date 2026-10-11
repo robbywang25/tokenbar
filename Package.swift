@@ -6,7 +6,8 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [.executable(name: "TokenBar", targets: ["TokenBar"])],
     targets: [
-        .executableTarget(name: "TokenBar"),
-        .testTarget(name: "TokenBarTests", dependencies: ["TokenBar"])
+        .target(name: "TokenBarWidgetShared", path: "Shared"),
+        .executableTarget(name: "TokenBar", dependencies: ["TokenBarWidgetShared"]),
+        .testTarget(name: "TokenBarTests", dependencies: ["TokenBar", "TokenBarWidgetShared"])
     ]
 )

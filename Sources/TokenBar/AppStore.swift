@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Foundation
 import ServiceManagement
+import TokenBarWidgetShared
 
 @MainActor
 final class AppStore: ObservableObject {
@@ -19,6 +20,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var rememberedMenuMetrics: [MenuQuotaMetric] = []
     @Published private(set) var expiryAlertsEnabled = true
     @Published private(set) var showsAgentPrefix = true
+    // Installed by the application delegate, never by isolated data tests.
+    var onWidgetSnapshotChange: ((TokenBarWidgetSnapshot) -> Void)?
 
     private var rememberedAccountEmails: [UUID: RememberedAccountEmail] = [:]
     private let client: ProviderClient
@@ -260,6 +263,7 @@ final class AppStore: ObservableObject {
         if enabled { selection.insert(id) } else { selection.remove(id) }
         menuQuotaSelection = selection
         rememberMenuChoices()
+        publishWidgetSnapshot()
     }
 
     private var effectiveMenuSelection: Set<String> {
@@ -269,6 +273,8 @@ final class AppStore: ObservableObject {
         }) else { return [] }
         return [metric.id]
     }
+
+    var selectedMenuMetricIDs: Set<String> { effectiveMenuSelection }
 
     private var selectedMenuMetrics: [MenuQuotaMetric] {
         let selected = effectiveMenuSelection
@@ -361,6 +367,7 @@ final class AppStore: ObservableObject {
         if revision == currentRevision { lastRefresh = Date(); rememberAccountEmails(); rememberMenuChoices(); persistReadings() }
         now = Date()
         isRefreshing = false
+        if revision == currentRevision { publishWidgetSnapshot() }
     }
 
     func connect(_ config: AccountConfig, secret: String? = nil) async throws {
@@ -393,6 +400,7 @@ final class AppStore: ObservableObject {
             rememberMenuChoices()
             persistReadings()
             errorMessage = nil
+            publishWidgetSnapshot()
         } catch {
             if savedSecret { CredentialStore.delete(account: config.id.uuidString) }
             throw error
@@ -425,6 +433,7 @@ final class AppStore: ObservableObject {
                 if config.method == .snapshotURL { CredentialStore.delete(account: config.id.uuidString) }
                 pruneExpiryReceipts(at: Date())
                 persistReadings()
+                publishWidgetSnapshot()
             }
         } catch { errorMessage = "无法保存账号变更，请检查本机存储权限。" }
     }
@@ -455,6 +464,7 @@ final class AppStore: ObservableObject {
     }
 
     private func load() {
+        defer { publishWidgetSnapshot() }
         accounts = (try? read([AccountConfig].self, name: "accounts.json")) ?? []
         readings = (try? read([UUID: AccountReading].self, name: "readings.json")) ?? [:]
         readings = readings.filter { id, _ in accounts.contains { $0.id == id } }
@@ -501,6 +511,11 @@ final class AppStore: ObservableObject {
         guard !isDemo else { return }
         do { try save(readings, name: "readings.json") }
         catch { errorMessage = "最新读数未能缓存到本机。" }
+    }
+
+    func publishWidgetSnapshot() {
+        guard let publish = onWidgetSnapshotChange, let snapshot = widgetSnapshot() else { return }
+        publish(snapshot)
     }
 
     func loadDemo() {

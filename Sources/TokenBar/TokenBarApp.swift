@@ -23,8 +23,11 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate
     private let store = AppStore()
     private var observation: AnyCancellable?
     private let expiryNotice = ExpiryNoticeController()
+    private let widgetPublisher = WidgetSnapshotPublisher()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        store.onWidgetSnapshotChange = { [weak self] snapshot in self?.widgetPublisher.submit(snapshot) }
+        store.publishWidgetSnapshot()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.image = nil
@@ -54,7 +57,7 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate
             if CommandLine.arguments.contains("--demo") { store.loadDemo() }
             else if CommandLine.arguments.contains("--connect-local") { await store.connectLocalAccounts() }
             else { await store.refresh() }
-            if CommandLine.arguments.contains("--show") { togglePopover() }
+            if CommandLine.arguments.contains("--show"), !popover.isShown { togglePopover() }
         }
     }
 
@@ -76,6 +79,13 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard urls.contains(where: { $0.scheme == "tokenbar" && $0.host == "dashboard" }),
+              statusItem != nil else { return }
+        if !popover.isShown { togglePopover() }
+        else { NSApp.activate(ignoringOtherApps: true) }
+    }
 
     func popoverDidClose(_ notification: Notification) { showExpiryNoticeIfNeeded() }
 
