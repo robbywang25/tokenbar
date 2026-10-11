@@ -14,9 +14,9 @@ scripts/package-release.sh --universal
 默认生成的 Universal 菜单栏版包含 Apple silicon 和 Intel 架构，不内嵌桌面小组件；产物位于 `dist/`：
 
 - `TokenBar.app`
-- `TokenBar-0.2.0-universal.zip`
-- `TokenBar-0.2.0-universal.dmg`
-- `TokenBar-0.2.0-universal-SHA256SUMS.txt`
+- `TokenBar-0.2.1-universal.zip`
+- `TokenBar-0.2.1-universal.dmg`
+- `TokenBar-0.2.1-universal-SHA256SUMS.txt`
 
 可使用 `TOKENBAR_VERSION` 和 `TOKENBAR_BUILD_NUMBER` 设置版本，例如：
 
@@ -51,57 +51,70 @@ WidgetKit 扩展直接由本机 macOS SDK 编译，不需要生成 Xcode 工程�
 scripts/package-release.sh --skip-build --with-widget
 ```
 
-Apple Development 签名的小组件包名带有 `-widget-development`，例如 `TokenBar-0.2.0-universal-widget-development.zip`。它用于本机验收，不作为面向所有用户的签名安装包发布。正式 Developer ID 小组件包使用 `-widget` 后缀；默认菜单栏版保持不带后缀的文件名。`--skip-build` 会识别已有扩展，并验证内外签名、共享组、版本和架构；指定 `--with-widget` 但应用缺少扩展时会失败。
+Apple Development 签名的小组件包名带有 `-widget-development`，例如 `TokenBar-0.2.1-universal-widget-development.zip`。它用于本机验收，不作为面向所有用户的签名安装包发布。正式 Developer ID 小组件包使用 `-widget` 后缀；默认菜单栏版保持不带后缀的文件名。`--skip-build` 会识别已有扩展，并验证内外签名、共享组、版本和架构；指定 `--with-widget` 但应用缺少扩展时会失败。
 
-## 3. Developer ID 签名
+## 3. Developer ID 签名与公证前检查
 
-维护者需要自己的 Apple Developer Program 账号和可用的 Developer ID Application 身份。先用以下命令列出本机可用签名身份，不要将私钥或密码写入仓库：
-
-```sh
-security find-identity -v -p codesigning
-```
-
-按实际身份名称构建，示例中的名称只是占位值：
+使用维护者自己的 Developer ID Application 身份构建正式小组件版。下面的身份和 Team ID 是占位值，必须替换为本次确认的真实身份；不要将私钥、密码或公证凭据写入仓库：
 
 ```sh
 export TOKENBAR_SIGN_IDENTITY='Developer ID Application: Example Organization (TEAMID)'
-scripts/package-release.sh --universal
+scripts/build-app.sh --universal --with-widget
+scripts/verify-release.sh --app dist/TokenBar.app --team-id TEAMID --pre-notary
+scripts/package-release.sh --skip-build --with-widget --no-dmg
 ```
 
-如发布包含桌面小组件的版本，在上述命令追加 `--with-widget`。脚本为应用及内嵌扩展启用 Hardened Runtime 和安全时间戳，并在打包前验证签名。DMG 也使用指定的 Developer ID 身份签名。主应用需要读取用户明确选择的客户端凭据并运行 CLI，因此未启用 App Sandbox；WidgetKit 扩展独立开启沙盒。此直接分发包不是 Mac App Store 提交包。
+`--pre-notary` 只检查应用的提交准备状态，不声称已公证。它要求主应用和扩展都具有 Apple 信任链下的 Developer ID 签名、相同 Team ID/共享组、两个架构的 Hardened Runtime 和安全时间戳，以及符合预期的最小 entitlements；Apple Development 和 ad-hoc 签名会被明确拒绝。它还核对实际 Mach-O 最低系统版本、WidgetKit 入口和内外版本一致性，然后执行 `syspolicy_check notary-submission`。
 
-## 4. Apple 公证与装订
+有些 macOS 版本的公证前检查会把尚未取得票据的候选交给 Gatekeeper 拒绝。只有上述签名与结构门禁已经通过，且独立 `spctl` 返回码为 `3`、精确原因为 `source=Unnotarized Developer ID` 时，验证器将其分类为 `policyStatus: notarization-pending` 并允许继续提交。这个结果只表示“等待公证”，不能称为已经公证或可以正式发布；其他策略错误仍然失败。正常公证前检查成功则输出 `notary-submission-ready`。
 
-使用 `xcrun notarytool store-credentials` 按本机工具提示，把维护者自己的公证凭据保存为 Keychain profile，例如 `TokenBar-Notary`。不要将凭据、密码或证书存入源码或 CI 日志。
+验证器的离线回归可运行 `python3 -B -m unittest discover -s scripts/tests -p test_verify_release.py -v`。测试使用合成文件与命令替身，不签名、挂载磁盘、提交公证或读取凭据；其中明确验证 `codesign --test-requirement` 的表达式必须使用 `=` 前缀，避免被工具误认为要求文件路径。
 
-以下示例针对 `0.2.0` Universal 菜单栏版，其他版本需相应替换文件名；小组件版所有归档文件名增加 `-widget` 后缀。保持上一步的 `TOKENBAR_SIGN_IDENTITY` 环境变量，先公证包含签名应用的 ZIP：
+构建先签内嵌扩展再签主应用。主应用需要读取用户明确选择的凭据并运行 CLI，未启用 App Sandbox；WidgetKit 扩展独立开启沙盒且没有网络权限。此直接分发包不是 Mac App Store 提交包。
+
+## 4. 公证、装订与最终校验
+
+维护者通过既有安全输入流程配置 `notarytool` Keychain profile，例如 `TokenBar-Notary`。验证脚本不读取 Keychain、不接收认证参数、不创建凭据，也不自动提交或上传任何文件；构建和打包中的签名由 `codesign` 使用系统管理的既有签名身份完成。
+
+以下命令以当前 `0.2.1` Universal 小组件版为例；版本变化时对应调整文件名。保持上一节导出的 `TOKENBAR_SIGN_IDENTITY`，先提交含 Developer ID 应用的初始 ZIP：
 
 ```sh
-xcrun notarytool submit dist/TokenBar-0.2.0-universal.zip \
+xcrun notarytool submit dist/TokenBar-0.2.1-universal-widget.zip \
   --keychain-profile TokenBar-Notary --wait
 ```
 
-只有公证结果为 `Accepted` 才继续。如果被拒绝，读取对应的 notarytool log 并修复问题。将票据装订到应用，再重新打包，确保 ZIP 和 DMG 都含有装订后的应用：
+只有服务端状态为 `Accepted` 才继续，保留提交 ID 和结果。如果被拒绝，读取该提交的公证日志并修复。ZIP 本身不支持装订，先将票据装订到独立应用并验证：
 
 ```sh
 xcrun stapler staple dist/TokenBar.app
 xcrun stapler validate dist/TokenBar.app
-scripts/package-release.sh --skip-build
-xcrun notarytool submit dist/TokenBar-0.2.0-universal.dmg \
-  --keychain-profile TokenBar-Notary --wait
+scripts/package-release.sh --skip-build --with-widget
 ```
 
-DMG 公证也必须为 `Accepted`。随后装订 DMG 并重新生成校验文件，因为装订会改变文件内容：
+这次重新打包让最终 ZIP 和 DMG 都包含已经装订的应用；因仍保留 Developer ID 环境变量，DMG 也使用该身份签名并获得安全时间戳。`--skip-build` 不重新编译或重签应用。不要在装订后再次运行普通 build 覆盖它。
+
+接着公证新 DMG，只有其结果也为 `Accepted` 才装订 DMG。装订改变 DMG 字节，因此最终校验文件必须在这一步之后生成：
 
 ```sh
-xcrun stapler staple dist/TokenBar-0.2.0-universal.dmg
-xcrun stapler validate dist/TokenBar-0.2.0-universal.dmg
+xcrun notarytool submit dist/TokenBar-0.2.1-universal-widget.dmg \
+  --keychain-profile TokenBar-Notary --wait
+xcrun stapler staple dist/TokenBar-0.2.1-universal-widget.dmg
+xcrun stapler validate dist/TokenBar-0.2.1-universal-widget.dmg
 (
   cd dist
-  shasum -a 256 TokenBar-0.2.0-universal.zip TokenBar-0.2.0-universal.dmg \
-    > TokenBar-0.2.0-universal-SHA256SUMS.txt
+  shasum -a 256 TokenBar-0.2.1-universal-widget.zip TokenBar-0.2.1-universal-widget.dmg \
+    > TokenBar-0.2.1-universal-widget-SHA256SUMS.txt
 )
+scripts/verify-release.sh \
+  --app dist/TokenBar.app --team-id TEAMID \
+  --zip dist/TokenBar-0.2.1-universal-widget.zip \
+  --dmg dist/TokenBar-0.2.1-universal-widget.dmg \
+  --checksums dist/TokenBar-0.2.1-universal-widget-SHA256SUMS.txt
 ```
+
+最终验证先核对恰好对应 ZIP/DMG 的两个 SHA-256，强制检查 app/DMG 装订票据、Gatekeeper 和现代 macOS `syspolicy_check distribution`；这里不接受 `notarization-pending`，缺少工具或任何一步失败都会拒绝发布。之后校验 ZIP 路径、文件类型和解压上限，再解到临时目录；DMG 只读挂载且不打开 Finder。两种归档里的应用必须与独立已验证应用逐文件一致，内含签名和票据也必须通过；结束时卸载并清理临时目录，再复核交付文件的 SHA。整个过程不运行应用、不修改原产物，不签名、装订或提交公证；系统的信任和票据验证可能访问 Apple 服务。
+
+验证成功后冻结这组三个交付文件。若再次打包、签名、装订或修改应用，重新走受影响的公证/装订步骤并重算校验文件；不能保留旧 SHA 或把初次未装订 ZIP 当成最终下载包。公开 GitHub Release 与自托管下载页必须引用同一组已验收产物。
 
 ## 5. 发布验收
 
@@ -111,7 +124,7 @@ xcrun stapler validate dist/TokenBar-0.2.0-universal.dmg
 codesign --verify --deep --strict --verbose=2 dist/TokenBar.app
 spctl --assess --type execute --verbose=2 dist/TokenBar.app
 spctl --assess --type open --context context:primary-signature --verbose=2 \
-  dist/TokenBar-0.2.0-universal.dmg
+  dist/TokenBar-0.2.1-universal-widget.dmg
 lipo -verify_arch arm64 x86_64 dist/TokenBar.app/Contents/MacOS/TokenBar
 ```
 
