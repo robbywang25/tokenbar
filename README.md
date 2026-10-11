@@ -2,13 +2,13 @@
 
 A native macOS menu-bar app for monitoring your AI agent quotas across accounts. Local credentials stay on your Mac; each provider is connected explicitly.
 
-TokenBar 把多个 AI Agent 账号的额度放到 macOS 菜单栏。点击菜单栏数值即可查看剩余比例、重置时间和数据更新时间；应用没有 Dock 图标，也不需要常驻主窗口。
+TokenBar 把多个 AI Agent 账号的额度放到 macOS 菜单栏和桌面小组件。点击数值即可查看剩余比例、重置时间和数据更新时间；应用没有 Dock 图标，也不需要常驻主窗口。
 
 [下载安装包](https://github.com/robbywang25/tokenbar/releases) · [问题反馈](https://github.com/robbywang25/tokenbar/issues) · [MIT 许可证](LICENSE)
 
 这是围绕个人审美与工作流制作的独立实现：紧凑的账号列表，明确的数据时效，以及接入已有额度后台的本地、HTTPS 和 SSH JSON 来源。菜单栏额度工具已有成熟选择，例如 [CodexBar](https://github.com/steipete/CodexBar) 和 [QuotaBar](https://github.com/QuotaBar/QuotaBar)；本项目没有将这些通用能力宣称为独创。它也与 [Arnie016/TokenBar](https://github.com/Arnie016/TokenBar) 这一同名项目无关联。
 
-这是可自行构建的预览版。项目包含独立 `.app`、Universal 二进制、ZIP、DMG 和校验文件的构建脚本；正式公开下载版仍需 Developer ID 签名、公证和发布验收。详见 [发布说明](RELEASE.md)。
+0.2.1 小组件版提供 Developer ID 签名并通过 Apple 公证的 Universal DMG、ZIP 和 SHA-256 校验文件，包含 Apple silicon 与 Intel 架构。默认源码构建仍是本机 ad-hoc 菜单栏版，不能代替已验收的分发包。详见 [发布说明](RELEASE.md)。
 
 ## 能看到什么
 
@@ -29,7 +29,9 @@ TokenBar 把多个 AI Agent 账号的额度放到 macOS 菜单栏。点击菜单
 
 ## 安装与运行
 
-需要 macOS 14 或更高版本。源代码构建需要包含 Swift 5.9 或更高版本的 Xcode Command Line Tools，不依赖第三方 Swift 包。
+需要 macOS 14 或更高版本。从 [GitHub Release](https://github.com/robbywang25/tokenbar/releases/tag/v0.2.1) 下载 DMG，将 TokenBar 拖入 Applications，先打开应用接入自己的账号，再在桌面右键“编辑小组件”中添加 TokenBar。下载安装包不需要开发工具。
+
+源代码构建需要包含 Swift 5.9 或更高版本的 Xcode Command Line Tools，不依赖第三方 Swift 包。
 
 ```sh
 xcode-select --install # 尚未安装开发工具时运行
@@ -119,13 +121,13 @@ SSH 接入使用系统 SSH 和既有的密钥或 agent，启用严格主机密�
 
 主程序将最小展示快照写入 App Group，扩展不读取凭据、不连接网络，也不执行 SSH。主程序需继续运行以采集新读数。WidgetKit 决定实际刷新时机；旧读数会标为“上次”，需要登录或未知状态不会变成零余额。
 
-小组件要求主程序和扩展使用同一真实 Apple 签名团队。默认 ad-hoc 构建以及现有 0.1.6 下载包仍为菜单栏版本。使用已有开发签名进行本机验证：
+小组件要求主程序和扩展使用同一真实 Apple 签名团队。默认 ad-hoc 构建及旧 0.1.6 下载包是菜单栏版本；0.2.1 的正式签名下载包包含小组件。使用已有开发签名进行本机验证：
 
 ```sh
 TOKENBAR_SIGN_IDENTITY='Apple Development' scripts/build-app.sh --universal --with-widget
 ```
 
-公开分发含小组件的安装包需要 Developer ID 签名与公证。开发签名只用于本机开发验证；不要将 ad-hoc 菜单栏包标为支持桌面小组件。详见 [发布说明](RELEASE.md)。
+维护者分发含小组件的安装包时需使用 Developer ID 签名并完成公证和验收。Apple Development 签名只用于本机开发验证；不要将 ad-hoc 菜单栏包标为支持桌面小组件。详见 [发布说明](RELEASE.md)。
 
 ### 菜单栏预览构建
 
