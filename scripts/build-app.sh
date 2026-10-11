@@ -121,6 +121,7 @@ swift "$ROOT_DIR/scripts/generate-icon.swift" "$STAGE_DIR/TokenBar.iconset"
 iconutil -c icns "$STAGE_DIR/TokenBar.iconset" -o "$STAGED_APP/Contents/Resources/TokenBar.icns"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$STAGED_APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$STAGED_APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :DTSDKName string macosx$(xcrun --sdk macosx --show-sdk-version)" "$STAGED_APP/Contents/Info.plist"
 plutil -lint "$STAGED_APP/Contents/Info.plist"
 
 if "$WITH_WIDGET"; then
@@ -131,6 +132,7 @@ if "$WITH_WIDGET"; then
   cp "$STAGED_APP/Contents/Resources/TokenBar.icns" "$WIDGET_PATH/Contents/Resources/TokenBar.icns"
   /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$WIDGET_PATH/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$WIDGET_PATH/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :DTSDKName string macosx$(xcrun --sdk macosx --show-sdk-version)" "$WIDGET_PATH/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Add :TokenBarAppGroup string $APP_GROUP" "$STAGED_APP/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Add :TokenBarAppGroup string $APP_GROUP" "$WIDGET_PATH/Contents/Info.plist"
   cp "$ROOT_DIR/Resources/TokenBar.entitlements" "$STAGE_DIR/TokenBar.entitlements"

@@ -18,6 +18,10 @@
     <string>TokenBar</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleSupportedPlatforms</key>
+    <array><string>MacOSX</string></array>
+    <key>DTPlatformName</key>
+    <string>macosx</string>
     <key>CFBundleShortVersionString</key>
     <string>0.2.1</string>
     <key>CFBundleVersion</key>
