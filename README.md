@@ -8,7 +8,7 @@ TokenBar 把多个 AI Agent 账号的额度放到 macOS 菜单栏和桌面小组
 
 这是围绕个人审美与工作流制作的独立实现：紧凑的账号列表，明确的数据时效，以及接入已有额度后台的本地、HTTPS 和 SSH JSON 来源。菜单栏额度工具已有成熟选择，例如 [CodexBar](https://github.com/steipete/CodexBar) 和 [QuotaBar](https://github.com/QuotaBar/QuotaBar)；本项目没有将这些通用能力宣称为独创。它也与 [Arnie016/TokenBar](https://github.com/Arnie016/TokenBar) 这一同名项目无关联。
 
-0.2.1 小组件版提供 Developer ID 签名并通过 Apple 公证的 Universal DMG、ZIP 和 SHA-256 校验文件，包含 Apple silicon 与 Intel 架构。默认源码构建仍是本机 ad-hoc 菜单栏版，不能代替已验收的分发包。详见 [发布说明](RELEASE.md)。
+0.2.2 小组件版提供 Developer ID 签名并通过 Apple 公证的 Universal DMG、ZIP 和 SHA-256 校验文件，包含 Apple silicon 与 Intel 架构。默认源码构建仍是本机 ad-hoc 菜单栏版，不能代替已验收的分发包。详见 [发布说明](RELEASE.md)。
 
 ## 能看到什么
 
@@ -29,7 +29,7 @@ TokenBar 把多个 AI Agent 账号的额度放到 macOS 菜单栏和桌面小组
 
 ## 安装与运行
 
-需要 macOS 14 或更高版本。从 [GitHub Release](https://github.com/robbywang25/tokenbar/releases/tag/v0.2.1) 下载 DMG，将 TokenBar 拖入 Applications，先打开应用接入自己的账号，再在桌面右键“编辑小组件”中添加 TokenBar。下载安装包不需要开发工具。
+需要 macOS 14 或更高版本。从 [GitHub Release](https://github.com/robbywang25/tokenbar/releases/tag/v0.2.2) 下载 DMG，将 TokenBar 拖入 Applications，先打开应用接入自己的账号，再在桌面右键“编辑小组件”中添加 TokenBar。下载安装包不需要开发工具。
 
 源代码构建需要包含 Swift 5.9 或更高版本的 Xcode Command Line Tools，不依赖第三方 Swift 包。
 
@@ -117,11 +117,15 @@ SSH 接入使用系统 SSH 和既有的密钥或 agent，启用严格主机密�
 
 ### 桌面小组件
 
-支持 WidgetKit 的签名构建可添加 macOS 桌面小组件：在桌面右键选择“编辑小组件”，搜索 `TokenBar`。小、中、大尺寸分别显示 1、3、6 个账号，菜单栏选中的账号优先。邮箱作为主标题，显示剩余比例、点数、套餐倍率和实际采集时间；重置卡数量独立显示，已知为 0 时也会保留，不占用额度指标位置。点按小组件可打开 TokenBar。
+支持 WidgetKit 的签名构建可添加 macOS 桌面小组件：在桌面右键选择“编辑小组件”，搜索 `TokenBar`。小、中、大尺寸分别显示 1、3、6 个账号，按使用紧急程度排序，同等条件保留菜单栏选择的优先顺序。邮箱作为主标题，显示剩余比例、点数、套餐倍率和实际采集时间；重置卡数量独立显示，已知为 0 时也会保留，不占用额度指标位置。点按小组件可打开 TokenBar。
+
+紧急程度表示“为了在重置前用完，需要加快使用的程度”：日均需用 = 剩余百分比 ÷ 距重置天数。以最长的有效常规额度周期为准（如每周优先于 5 小时），与整个周期的正常日均比较，达到 1.5 倍标“优先”，达到 2 倍标“紧急”，其他有效余量标“正常”。例如每周额度剩 60%、两天后重置，需要每天用 30%，约为每周正常日均的 2.1 倍，显示“紧急”。同级按日均需用从高到低，再按更早重置排序。
+
+没有明确周期起止、已用完、无限额或过期读数不计算紧急程度，也不回退到其他额度池；Reserve 不参与计算。标签旁会标明所用窗口（如“每周 · 需用 30%/天”），避免与另一列的短周期额度混淆。
 
 主程序将最小展示快照写入 App Group，扩展不读取凭据、不连接网络，也不执行 SSH。主程序需继续运行以采集新读数。WidgetKit 决定实际刷新时机；旧读数会标为“上次”，需要登录或未知状态不会变成零余额。
 
-小组件要求主程序和扩展使用同一真实 Apple 签名团队。默认 ad-hoc 构建及旧 0.1.6 下载包是菜单栏版本；0.2.1 的正式签名下载包包含小组件。使用已有开发签名进行本机验证：
+小组件要求主程序和扩展使用同一真实 Apple 签名团队。默认 ad-hoc 构建及旧 0.1.6 下载包是菜单栏版本；0.2.2 的正式签名下载包包含小组件。使用已有开发签名进行本机验证：
 
 ```sh
 TOKENBAR_SIGN_IDENTITY='Apple Development' scripts/build-app.sh --universal --with-widget

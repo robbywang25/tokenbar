@@ -24,7 +24,7 @@ struct TokenBarWidgetView: View {
     }
 
     private var accounts: [TokenBarWidgetAccount] {
-        Array(entry.snapshot.accounts.prefix(family == .systemSmall ? 1 : family == .systemMedium ? 3 : 6))
+        Array(entry.snapshot.rankedAccounts(at: entry.date).prefix(family == .systemSmall ? 1 : family == .systemMedium ? 3 : 6))
     }
 
     private var emptyState: some View {
@@ -54,13 +54,14 @@ struct TokenBarWidgetView: View {
     private func smallAccount(_ account: TokenBarWidgetAccount) -> some View {
         let fresh = account.isFresh(at: entry.date)
         let metrics = account.displayMetrics()
-        return VStack(alignment: .leading, spacing: 4) {
+        return VStack(alignment: .leading, spacing: 2) {
             heading
             Text(identity(account)).font(.system(size: 12, weight: .semibold))
                 .lineLimit(2).truncationMode(.middle)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 2)
             Text(service(account)).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+            urgencyLine(account, fontSize: 9)
             Spacer(minLength: 0)
             if let primary = metrics.first {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
@@ -92,7 +93,7 @@ struct TokenBarWidgetView: View {
     }
 
     private var accountList: some View {
-        VStack(alignment: .leading, spacing: family == .systemLarge ? 5 : 6) {
+        VStack(alignment: .leading, spacing: family == .systemLarge ? 6 : 4) {
             heading
             ForEach(accounts) { account in
                 accountRow(account, compact: family == .systemMedium)
@@ -102,30 +103,14 @@ struct TokenBarWidgetView: View {
     }
 
     private func accountRow(_ account: TokenBarWidgetAccount, compact: Bool) -> some View {
-        let fresh = account.isFresh(at: entry.date)
         let metrics = account.displayMetrics()
         return VStack(alignment: .leading, spacing: 3) {
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 4) {
-                        Text(identity(account)).font(.system(size: compact ? 11 : 12, weight: .semibold))
-                            .lineLimit(1).truncationMode(.middle)
-                        if compact { resetCardBadge(account) }
-                    }
-                    if compact {
-                        HStack(spacing: 5) {
-                            Text(service(account)).lineLimit(1)
-                            Text(observation(account)).lineLimit(1).fixedSize(horizontal: true, vertical: false)
-                        }
-                        .font(.system(size: 8)).foregroundStyle(.secondary)
-                    } else {
-                        Text(service(account)).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
-                        HStack(spacing: 4) {
-                            Text(observation(account)).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
-                            Spacer(minLength: 0)
-                            resetCardBadge(account)
-                        }
-                    }
+                    Text(identity(account)).font(.system(size: compact ? 11 : 12, weight: .semibold))
+                        .lineLimit(1).truncationMode(.middle)
+                    Text(service(account)).font(.system(size: compact ? 8 : 9))
+                        .foregroundStyle(.secondary).lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 HStack(alignment: .top, spacing: 8) {
@@ -143,10 +128,47 @@ struct TokenBarWidgetView: View {
                 }
                 .fixedSize(horizontal: true, vertical: false)
             }
-            if let primary = metrics.first { quotaBar(primary, fresh: fresh) }
+            HStack(spacing: 5) {
+                urgencyLine(account, fontSize: compact ? 8 : 9)
+                    .layoutPriority(1)
+                Spacer(minLength: 0)
+                Text(observation(account)).font(.system(size: 8)).foregroundStyle(.secondary)
+                    .lineLimit(1).minimumScaleFactor(0.85)
+                resetCardBadge(account)
+            }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilitySummary(account))
+    }
+
+    @ViewBuilder
+    private func urgencyLine(_ account: TokenBarWidgetAccount, fontSize: CGFloat) -> some View {
+        if let urgency = account.urgency(at: entry.date), let window = account.urgencyWindow {
+            let color = urgencyColor(urgency.level)
+            HStack(spacing: 4) {
+                Text(urgency.level.title)
+                    .font(.system(size: fontSize, weight: .semibold))
+                    .foregroundStyle(color)
+                    .padding(.horizontal, 4).padding(.vertical, 1)
+                    .background(color.opacity(0.10), in: RoundedRectangle(cornerRadius: 3))
+                    .fixedSize(horizontal: true, vertical: false)
+                Text(window.label.replacingOccurrences(of: " ", with: "") + " · 需用 " + dailyValue(urgency.requiredDailyPercent) + "%/天")
+                    .font(.system(size: fontSize)).foregroundStyle(.secondary)
+                    .monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
+            }
+        }
+    }
+
+    private func urgencyColor(_ level: QuotaUrgencyLevel) -> Color {
+        switch level {
+        case .normal: return .secondary
+        case .priority: return .orange
+        case .urgent: return .red
+        }
+    }
+
+    private func dailyValue(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(0...1)))
     }
 
     @ViewBuilder
@@ -216,7 +238,13 @@ struct TokenBarWidgetView: View {
             return metric.label + "，" + (historical ? "上次 " : "") + value
         }.joined(separator: "，")
         let cards = account.resetCardsLabel(at: entry.date).map { "，" + $0 } ?? ""
-        return identity(account) + "，" + service(account) + "，" + metrics + cards + "，" + observation(account)
+        let urgency: String
+        if let assessment = account.urgency(at: entry.date), let window = account.urgencyWindow {
+            urgency = "，" + assessment.level.title + "，" + window.label + "每天需使用 " + dailyValue(assessment.requiredDailyPercent) + "%"
+        } else {
+            urgency = ""
+        }
+        return identity(account) + "，" + service(account) + "，" + metrics + cards + urgency + "，" + observation(account)
     }
 }
 

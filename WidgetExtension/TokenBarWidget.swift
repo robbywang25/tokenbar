@@ -27,10 +27,8 @@ struct TokenBarWidgetProvider: TimelineProvider {
         let now = Date()
         let snapshot = readSnapshot(at: now)
         let nextRead = now.addingTimeInterval(15 * 60)
-        // Expire the displayed observation even if the menu-bar host stops.
-        // These entries reuse only the same local snapshot; no provider requests.
-        let boundaries = Set(snapshot.accounts.compactMap(\.freshUntil).filter { $0 > now && $0 < nextRead }).sorted()
-        let entries = ([now] + boundaries).map { TokenBarWidgetEntry(date: $0, snapshot: snapshot) }
+        let entries = TokenBarWidgetTimeline.dates(snapshot: snapshot, after: now, before: nextRead)
+            .map { TokenBarWidgetEntry(date: $0, snapshot: snapshot) }
         completion(Timeline(entries: entries, policy: .after(nextRead)))
     }
 
@@ -42,6 +40,24 @@ struct TokenBarWidgetProvider: TimelineProvider {
             // An unreadable or invalid shared file is unavailable, never a zero balance.
             return TokenBarWidgetSnapshot(generatedAt: now, accounts: [])
         }
+    }
+}
+
+enum TokenBarWidgetTimeline {
+    static func dates(snapshot: TokenBarWidgetSnapshot, after now: Date, before nextRead: Date) -> [Date] {
+        // Evaluate ranking, urgency, and freshness again at every entry date.
+        // Exact threshold/expiry entries do not wait for a host refresh. Minute
+        // entries keep the derived daily pace current while any reading is fresh.
+        let freshness = snapshot.accounts.compactMap(\.freshUntil).filter { $0 > now && $0 < nextRead }
+        let urgency = snapshot.urgencyBoundaryDates(after: now, before: nextRead)
+        var dates = Set([now] + freshness + urgency)
+        let lastFresh = min(nextRead, snapshot.accounts.compactMap(\.freshUntil).max() ?? now)
+        var tick = Date(timeIntervalSince1970: (floor(now.timeIntervalSince1970 / 60) + 1) * 60)
+        while tick < lastFresh {
+            dates.insert(tick)
+            tick = tick.addingTimeInterval(60)
+        }
+        return dates.sorted()
     }
 }
 
@@ -74,6 +90,7 @@ enum TokenBarWidgetPreview {
                       "agent-four@example.com", "agent-five@example.com", "agent-six@example.com"]
         let providers = ["Codex", "Claude", "Grok", "Cursor", "Codex", "GrokBot"]
         let percentages: [Double] = [63, 78, 42, 18, 91, 55]
+        let daysRemaining: [Double] = [2.625, 1.5, 4.5, 3, 6.5, 4]
         let accounts = emails.enumerated().map { index, email in
             TokenBarWidgetAccount(
                 id: UUID(uuidString: String(format: "00000000-0000-4000-8000-%012d", index + 1))!,
@@ -84,7 +101,10 @@ enum TokenBarWidgetPreview {
                     TokenBarWidgetMetric(id: index == 0 ? "credits" : "secondary", label: index == 0 ? "点数" : "5 小时",
                                          value: index == 0 ? "44700 点" : "86%", remainingPercent: index == 0 ? nil : 86)
                 ],
-                resetCards: index == 0 ? 2 : index == 4 ? 0 : nil
+                resetCards: index == 0 ? 2 : index == 4 ? 0 : nil,
+                urgencyWindow: QuotaUrgencyWindow(label: "每周", remainingPercent: percentages[index],
+                    startsAt: date.addingTimeInterval((daysRemaining[index] - 7) * 86_400),
+                    resetsAt: date.addingTimeInterval(daysRemaining[index] * 86_400))
             )
         }
         return TokenBarWidgetEntry(date: date, snapshot: TokenBarWidgetSnapshot(generatedAt: date, accounts: accounts))

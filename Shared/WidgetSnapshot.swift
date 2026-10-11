@@ -35,6 +35,24 @@ public struct TokenBarWidgetSnapshot: Codable, Equatable, Sendable {
         self.generatedAt = generatedAt
         self.accounts = accounts
     }
+
+    public func rankedAccounts(at now: Date) -> [TokenBarWidgetAccount] {
+        accounts.enumerated().sorted { first, second in
+            let left = first.element.urgency(at: now), right = second.element.urgency(at: now)
+            if (left?.level.rank ?? -1) != (right?.level.rank ?? -1) { return (left?.level.rank ?? -1) > (right?.level.rank ?? -1) }
+            if (left?.requiredDailyPercent ?? 0) != (right?.requiredDailyPercent ?? 0) { return (left?.requiredDailyPercent ?? 0) > (right?.requiredDailyPercent ?? 0) }
+            if let left, let right, left.resetsAt != right.resetsAt { return left.resetsAt < right.resetsAt }
+            return first.offset < second.offset
+        }.map(\.element)
+    }
+
+    public func urgencyBoundaryDates(after: Date, before: Date) -> [Date] {
+        let dates = accounts.flatMap { account -> [Date] in
+            guard account.isFresh(at: after), let window = account.urgencyWindow, let until = account.freshUntil else { return [] }
+            return QuotaUrgency.boundaryDates(window: window, after: after, before: before).filter { $0 <= until }
+        }
+        return Array(Set(dates)).sorted()
+    }
 }
 
 public struct TokenBarWidgetAccount: Codable, Equatable, Identifiable, Sendable {
@@ -47,9 +65,11 @@ public struct TokenBarWidgetAccount: Codable, Equatable, Identifiable, Sendable 
     public var freshUntil: Date?
     public var metrics: [TokenBarWidgetMetric]
     public var resetCards: Int? = nil
+    public var urgencyWindow: QuotaUrgencyWindow? = nil
 
     public init(id: UUID, email: String?, provider: String, plan: String?, status: TokenBarWidgetStatus,
-                observedAt: Date?, freshUntil: Date?, metrics: [TokenBarWidgetMetric], resetCards: Int? = nil) {
+                observedAt: Date?, freshUntil: Date?, metrics: [TokenBarWidgetMetric], resetCards: Int? = nil,
+                urgencyWindow: QuotaUrgencyWindow? = nil) {
         self.id = id
         self.email = email
         self.provider = provider
@@ -59,6 +79,12 @@ public struct TokenBarWidgetAccount: Codable, Equatable, Identifiable, Sendable 
         self.freshUntil = freshUntil
         self.metrics = metrics
         self.resetCards = resetCards
+        self.urgencyWindow = urgencyWindow
+    }
+
+    public func urgency(at now: Date) -> QuotaUrgencyAssessment? {
+        guard let urgencyWindow else { return nil }
+        return QuotaUrgency.evaluate(window: urgencyWindow, at: now, isFresh: isFresh(at: now))
     }
 
     /// Keep reset cards independent and reserve the second visual slot for points.
@@ -130,7 +156,13 @@ public extension TokenBarWidgetSnapshot {
             if account.status == .connected {
                 guard account.observedAt != nil, account.freshUntil != nil else { throw TokenBarWidgetSnapshotError.invalidSnapshot }
             }
-            if account.observedAt == nil && (!account.metrics.isEmpty || account.resetCards != nil) {
+            if let window = account.urgencyWindow {
+                guard window.hasValidCycle, Self.safeText(window.label, maximum: 80),
+                      Self.validDate(window.startsAt), Self.validDate(window.resetsAt) else {
+                    throw TokenBarWidgetSnapshotError.invalidSnapshot
+                }
+            }
+            if account.observedAt == nil && (!account.metrics.isEmpty || account.resetCards != nil || account.urgencyWindow != nil) {
                 throw TokenBarWidgetSnapshotError.invalidSnapshot
             }
             for metric in account.metrics {

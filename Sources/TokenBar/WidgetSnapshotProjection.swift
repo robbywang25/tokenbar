@@ -38,7 +38,15 @@ extension AppStore {
 
         var projected: [(metric: TokenBarWidgetMetric, selected: Bool)] = []
         var resetCards: Int?
+        var urgencyWindow: QuotaUrgencyWindow?
         if let reading, observed != nil {
+            let windows = reading.windows.filter { $0.group == "default" && !$0.unlimited }.compactMap { window -> QuotaUrgencyWindow? in
+                guard let percent = window.remainingPercent, let start = window.startsAt, let reset = window.resetsAt,
+                      Self.widgetDate(start), Self.widgetDate(reset) else { return nil }
+                let label = Self.widgetText(window.title + (window.model.map { " · " + $0 } ?? ""), maximum: 80) ?? "额度"
+                return QuotaUrgencyWindow(label: label, remainingPercent: percent, startsAt: start, resetsAt: reset)
+            }
+            urgencyWindow = QuotaUrgency.primaryWindow(from: windows, at: date, isFresh: reading.isFresh(at: date))
             for (index, window) in reading.visibleWindows.enumerated() {
                 let value: String
                 let percent: Double?
@@ -74,7 +82,7 @@ extension AppStore {
         }
         return TokenBarWidgetAccount(id: account.id, email: AccountEmail.validated(accountEmail(account)), provider: provider, plan: plan,
                                      status: status, observedAt: observed, freshUntil: freshUntil,
-                                     metrics: metrics, resetCards: resetCards)
+                                     metrics: metrics, resetCards: resetCards, urgencyWindow: urgencyWindow)
     }
 
     private static func widgetDate(_ date: Date) -> Bool {
