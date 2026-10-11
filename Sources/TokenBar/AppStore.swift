@@ -57,11 +57,11 @@ final class AppStore: ObservableObject {
             // Freshness boundaries are coarse. Per-second countdowns live in
             // isolated TimelineViews so scrolling never invalidates the full list.
             clock = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.now = Date() }
+                Task { @MainActor [weak self] in self?.now = Date() }
             }
             schedulePoll()
             wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in await self?.refresh() }
+                Task { @MainActor [weak self] in await self?.refresh() }
             }
         }
     }
@@ -459,7 +459,7 @@ final class AppStore: ObservableObject {
     private func schedulePoll() {
         poll?.invalidate()
         poll = Timer.scheduledTimer(withTimeInterval: refreshSeconds, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.refresh() }
+            Task { @MainActor [weak self] in await self?.refresh() }
         }
     }
 

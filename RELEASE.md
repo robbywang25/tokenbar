@@ -4,6 +4,10 @@
 
 ## 1. 本地验证与预览包
 
+GitHub Actions 在默认分支 `codex/tokenbar-macos` 的 push、以该分支为目标的 PR，以及手动运行时执行。工作分支 push 和版本 tag push 不单独触发；同一 PR 或分支的新运行会取消同一触发类型下尚未完成的旧运行。PR 检查与合入后默认分支检查分别验证候选和实际合入结果。
+
+CI 固定使用 `macos-14` 上的 Xcode 15.4，并在日志中输出 Xcode、Swift 和 SDK 版本。它运行测试、WidgetKit 双架构类型检查、Universal 预览打包及签名结构检查；CI 预览产物仍为 ad-hoc 菜单栏版。更新 runner 时应同时检查并更新固定的 Xcode 路径。
+
 在 macOS 上安装 Xcode Command Line Tools，确认使用支持 macOS 14 的 SDK，然后执行：
 
 ```sh
