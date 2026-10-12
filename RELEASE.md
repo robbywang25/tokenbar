@@ -18,14 +18,14 @@ scripts/package-release.sh --universal
 默认生成的 Universal 菜单栏版包含 Apple silicon 和 Intel 架构，不内嵌桌面小组件；产物位于 `dist/`：
 
 - `TokenBar.app`
-- `TokenBar-0.2.3-universal.zip`
-- `TokenBar-0.2.3-universal.dmg`
-- `TokenBar-0.2.3-universal-SHA256SUMS.txt`
+- `TokenBar-0.2.4-universal.zip`
+- `TokenBar-0.2.4-universal.dmg`
+- `TokenBar-0.2.4-universal-SHA256SUMS.txt`
 
 可使用 `TOKENBAR_VERSION` 和 `TOKENBAR_BUILD_NUMBER` 设置版本，例如：
 
 ```sh
-TOKENBAR_VERSION=0.2.3 TOKENBAR_BUILD_NUMBER=13 scripts/package-release.sh --universal
+TOKENBAR_VERSION=0.2.4 TOKENBAR_BUILD_NUMBER=14 scripts/package-release.sh --universal
 ```
 
 每次正式发布应递增版本和 build number。`TOKENBAR_DIST_DIR` 可指定输出目录；默认只写入本仓库的 `dist/` 和 `.build/`。脚本不会上传文件或创建公开 release。
@@ -55,7 +55,7 @@ WidgetKit 扩展直接由本机 macOS SDK 编译，不需要生成 Xcode 工程�
 scripts/package-release.sh --skip-build --with-widget
 ```
 
-Apple Development 签名的小组件包名带有 `-widget-development`，例如 `TokenBar-0.2.3-universal-widget-development.zip`。它用于本机验收，不作为面向所有用户的签名安装包发布。正式 Developer ID 小组件包使用 `-widget` 后缀；默认菜单栏版保持不带后缀的文件名。`--skip-build` 会识别已有扩展，并验证内外签名、共享组、版本和架构；指定 `--with-widget` 但应用缺少扩展时会失败。
+Apple Development 签名的小组件包名带有 `-widget-development`，例如 `TokenBar-0.2.4-universal-widget-development.zip`。它用于本机验收，不作为面向所有用户的签名安装包发布。正式 Developer ID 小组件包使用 `-widget` 后缀；默认菜单栏版保持不带后缀的文件名。`--skip-build` 会识别已有扩展，并验证内外签名、共享组、版本和架构；指定 `--with-widget` 但应用缺少扩展时会失败。
 
 ## 3. Developer ID 签名与公证前检查
 
@@ -80,10 +80,10 @@ scripts/package-release.sh --skip-build --with-widget --no-dmg
 
 维护者通过既有安全输入流程配置 `notarytool` Keychain profile，例如 `TokenBar-Notary`。验证脚本不读取 Keychain、不接收认证参数、不创建凭据，也不自动提交或上传任何文件；构建和打包中的签名由 `codesign` 使用系统管理的既有签名身份完成。
 
-以下命令以当前 `0.2.3` Universal 小组件版为例；版本变化时对应调整文件名。保持上一节导出的 `TOKENBAR_SIGN_IDENTITY`，先提交含 Developer ID 应用的初始 ZIP：
+以下命令以当前 `0.2.4` Universal 小组件版为例；版本变化时对应调整文件名。保持上一节导出的 `TOKENBAR_SIGN_IDENTITY`，先提交含 Developer ID 应用的初始 ZIP：
 
 ```sh
-xcrun notarytool submit dist/TokenBar-0.2.3-universal-widget.zip \
+xcrun notarytool submit dist/TokenBar-0.2.4-universal-widget.zip \
   --keychain-profile TokenBar-Notary --wait
 ```
 
@@ -100,20 +100,20 @@ scripts/package-release.sh --skip-build --with-widget
 接着公证新 DMG，只有其结果也为 `Accepted` 才装订 DMG。装订改变 DMG 字节，因此最终校验文件必须在这一步之后生成：
 
 ```sh
-xcrun notarytool submit dist/TokenBar-0.2.3-universal-widget.dmg \
+xcrun notarytool submit dist/TokenBar-0.2.4-universal-widget.dmg \
   --keychain-profile TokenBar-Notary --wait
-xcrun stapler staple dist/TokenBar-0.2.3-universal-widget.dmg
-xcrun stapler validate dist/TokenBar-0.2.3-universal-widget.dmg
+xcrun stapler staple dist/TokenBar-0.2.4-universal-widget.dmg
+xcrun stapler validate dist/TokenBar-0.2.4-universal-widget.dmg
 (
   cd dist
-  shasum -a 256 TokenBar-0.2.3-universal-widget.zip TokenBar-0.2.3-universal-widget.dmg \
-    > TokenBar-0.2.3-universal-widget-SHA256SUMS.txt
+  shasum -a 256 TokenBar-0.2.4-universal-widget.zip TokenBar-0.2.4-universal-widget.dmg \
+    > TokenBar-0.2.4-universal-widget-SHA256SUMS.txt
 )
 scripts/verify-release.sh \
   --app dist/TokenBar.app --team-id TEAMID \
-  --zip dist/TokenBar-0.2.3-universal-widget.zip \
-  --dmg dist/TokenBar-0.2.3-universal-widget.dmg \
-  --checksums dist/TokenBar-0.2.3-universal-widget-SHA256SUMS.txt
+  --zip dist/TokenBar-0.2.4-universal-widget.zip \
+  --dmg dist/TokenBar-0.2.4-universal-widget.dmg \
+  --checksums dist/TokenBar-0.2.4-universal-widget-SHA256SUMS.txt
 ```
 
 最终验证先核对恰好对应 ZIP/DMG 的两个 SHA-256，强制检查 app/DMG 装订票据、Gatekeeper 和现代 macOS `syspolicy_check distribution`；这里不接受 `notarization-pending`，缺少工具或任何一步失败都会拒绝发布。之后校验 ZIP 路径、文件类型和解压上限，再解到临时目录；DMG 只读挂载且不打开 Finder。两种归档里的应用必须与独立已验证应用逐文件一致，内含签名和票据也必须通过；结束时卸载并清理临时目录，再复核交付文件的 SHA。整个过程不运行应用、不修改原产物，不签名、装订或提交公证；系统的信任和票据验证可能访问 Apple 服务。
@@ -128,7 +128,7 @@ scripts/verify-release.sh \
 codesign --verify --deep --strict --verbose=2 dist/TokenBar.app
 spctl --assess --type execute --verbose=2 dist/TokenBar.app
 spctl --assess --type open --context context:primary-signature --verbose=2 \
-  dist/TokenBar-0.2.3-universal-widget.dmg
+  dist/TokenBar-0.2.4-universal-widget.dmg
 lipo -verify_arch arm64 x86_64 dist/TokenBar.app/Contents/MacOS/TokenBar
 ```
 

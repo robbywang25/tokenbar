@@ -85,11 +85,13 @@ final class WidgetUrgencyTests: XCTestCase {
         let urgent = row(label: "urgent", window: weekly(percent: 80, daysLeft: 2))
         let earlier = row(label: "earlier", window: weekly(percent: 60, daysLeft: 1.5))
         let tied = row(label: "tied", window: weekly(percent: 60, daysLeft: 1.5))
-        var stale = row(label: "stale", window: weekly(percent: 100, daysLeft: 0.5)); stale.status = .stale
+        var stale = row(label: "stale", window: weekly(percent: 100, daysLeft: 0.5))
+        stale.status = .stale; stale.observedAt = now.addingTimeInterval(-3_601); stale.freshUntil = nil
         let snapshot = TokenBarWidgetSnapshot(generatedAt: now, accounts: [unknown, normal, priority, urgent, tied, earlier, stale])
         XCTAssertEqual(snapshot.rankedAccounts(at: now).map(\.id), [tied.id, earlier.id, urgent.id, priority.id, normal.id, unknown.id, stale.id])
         XCTAssertEqual(snapshot.accounts.map(\.id), [unknown.id, normal.id, priority.id, urgent.id, tied.id, earlier.id, stale.id])
-        XCTAssertEqual(snapshot.rankedAccounts(at: now.addingTimeInterval(120)).map(\.id), snapshot.accounts.map(\.id))
+        XCTAssertEqual(snapshot.rankedAccounts(at: now.addingTimeInterval(120)).map(\.id), [tied.id, earlier.id, urgent.id, priority.id, normal.id, unknown.id, stale.id])
+        XCTAssertEqual(snapshot.rankedAccounts(at: now.addingTimeInterval(3_600)).map(\.id), snapshot.accounts.map(\.id))
     }
 
     func testThresholdTimelineBoundariesAreWithinFreshLifetimeAndRecomputeLevels() throws {
@@ -160,7 +162,10 @@ final class WidgetUrgencyTests: XCTestCase {
         XCTAssertEqual(snapshot.accounts[0].urgencyWindow?.label, "每周")
         XCTAssertNil(snapshot.accounts[0].urgency(at: now))
         store.readings[config.id]?.status = .needsAuth
-        XCTAssertNil(try XCTUnwrap(store.widgetSnapshot(at: now)).accounts[0].urgencyWindow)
+        let historical = try XCTUnwrap(store.widgetSnapshot(at: now)).accounts[0]
+        XCTAssertEqual(historical.urgencyWindow?.label, "每周")
+        XCTAssertNil(historical.urgency(at: now))
+        XCTAssertEqual(historical.status, .needsAuth)
         store.readings[config.id]?.status = .connected
         store.readings[config.id]?.windows = [QuotaWindow(id: "no-start", label: "每周", remainingPercent: 80, resetsAt: now.addingTimeInterval(3600))]
         XCTAssertNil(try XCTUnwrap(store.widgetSnapshot(at: now)).accounts[0].urgencyWindow)

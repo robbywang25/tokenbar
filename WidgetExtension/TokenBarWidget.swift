@@ -45,13 +45,18 @@ struct TokenBarWidgetProvider: TimelineProvider {
 
 enum TokenBarWidgetTimeline {
     static func dates(snapshot: TokenBarWidgetSnapshot, after now: Date, before nextRead: Date) -> [Date] {
-        // Evaluate ranking, urgency, and freshness again at every entry date.
-        // Exact threshold/expiry entries do not wait for a host refresh. Minute
-        // entries keep the derived daily pace current while any reading is fresh.
-        let freshness = snapshot.accounts.compactMap(\.freshUntil).filter { $0 > now && $0 < nextRead }
+        // Display freshness and ranking retention are independent. Queue the
+        // exact one-hour ranking deadlines even beyond the next requested read:
+        // WidgetKit may delay that read, but can still apply this saved entry.
+        // Each account contributes at most one ranking deadline, not an hour of
+        // minute ticks. Live urgency keeps its original fresh-only cadence.
+        let liveAccounts = snapshot.accounts.filter { $0.isFresh(at: now) }
+        let freshness = liveAccounts.compactMap(\.freshUntil).filter { $0 > now && $0 < nextRead }
         let urgency = snapshot.urgencyBoundaryDates(after: now, before: nextRead)
-        var dates = Set([now] + freshness + urgency)
-        let lastFresh = min(nextRead, snapshot.accounts.compactMap(\.freshUntil).max() ?? now)
+        let ranking = snapshot.accounts.filter { $0.isWithinRankingGrace(at: now) }
+            .compactMap(\.rankingExpiresAt).filter { $0 > now }
+        var dates = Set([now] + freshness + urgency + ranking)
+        let lastFresh = min(nextRead, liveAccounts.compactMap(\.freshUntil).max() ?? now)
         var tick = Date(timeIntervalSince1970: (floor(now.timeIntervalSince1970 / 60) + 1) * 60)
         while tick < lastFresh {
             dates.insert(tick)
@@ -89,24 +94,25 @@ enum TokenBarWidgetPreview {
         let emails = ["agent-one@example.com", "agent-two@example.com", "agent-three@example.com",
                       "agent-four@example.com", "agent-five@example.com", "agent-six@example.com"]
         let providers = ["Codex", "Claude", "Grok", "Cursor", "Codex", "GrokBot"]
-        let percentages: [Double] = [63, 78, 42, 18, 91, 55]
+        let percentages: [Double] = [63, 78, 42, 0, 91, 55]
         let daysRemaining: [Double] = [2.625, 1.5, 4.5, 3, 6.5, 4]
         let accounts = emails.enumerated().map { index, email in
-            TokenBarWidgetAccount(
+            let cursor = index == 3
+            let reset = date.addingTimeInterval(daysRemaining[index] * 86_400)
+            let primary = TokenBarWidgetMetric(id: cursor ? "auto" : "weekly", label: cursor ? "Auto" : "每周",
+                value: cursor ? "98%" : "\(Int(percentages[index]))%", remainingPercent: cursor ? 98 : percentages[index], resetsAt: reset)
+            let secondary = TokenBarWidgetMetric(id: index == 0 ? "credits" : cursor ? "other-api" : "secondary",
+                label: index == 0 ? "点数" : cursor ? "其他 (API)" : "5 小时",
+                value: index == 0 ? "44700 点" : cursor ? "0%" : "86%", remainingPercent: index == 0 ? nil : cursor ? 0 : 86,
+                resetsAt: index == 0 ? nil : cursor ? reset : date.addingTimeInterval(Double(index + 1) * 1_800))
+            return TokenBarWidgetAccount(
                 id: UUID(uuidString: String(format: "00000000-0000-4000-8000-%012d", index + 1))!,
                 email: email, provider: providers[index], plan: index == 0 ? "Pro" : nil,
                 status: .connected, observedAt: date.addingTimeInterval(-20), freshUntil: date.addingTimeInterval(100),
-                metrics: [
-                    TokenBarWidgetMetric(id: "weekly", label: "每周", value: "\(Int(percentages[index]))%", remainingPercent: percentages[index],
-                                         resetsAt: date.addingTimeInterval(daysRemaining[index] * 86_400)),
-                    TokenBarWidgetMetric(id: index == 0 ? "credits" : "secondary", label: index == 0 ? "点数" : "5 小时",
-                                         value: index == 0 ? "44700 点" : "86%", remainingPercent: index == 0 ? nil : 86,
-                                         resetsAt: index == 0 ? nil : date.addingTimeInterval(Double(index + 1) * 1_800))
-                ],
+                metrics: [primary, secondary],
                 resetCards: index == 0 ? 2 : index == 4 ? 0 : nil,
-                urgencyWindow: QuotaUrgencyWindow(label: "每周", remainingPercent: percentages[index],
-                    startsAt: date.addingTimeInterval((daysRemaining[index] - 7) * 86_400),
-                    resetsAt: date.addingTimeInterval(daysRemaining[index] * 86_400))
+                urgencyWindow: QuotaUrgencyWindow(label: cursor ? "其他 (API)" : "每周", remainingPercent: percentages[index],
+                    startsAt: date.addingTimeInterval((daysRemaining[index] - (cursor ? 30 : 7)) * 86_400), resetsAt: reset)
             )
         }
         return TokenBarWidgetEntry(date: date, snapshot: TokenBarWidgetSnapshot(generatedAt: date, accounts: accounts))

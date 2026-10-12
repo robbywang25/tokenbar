@@ -23,6 +23,14 @@ extension AppStore {
         let observed = reading?.lastSuccessAt.flatMap { value in
             Self.widgetDate(value) && value <= date.addingTimeInterval(60) ? value : nil
         }
+        let rankingObserved: Date? = {
+            guard let reading, let observed else { return nil }
+            if reading.sourceCollectedAtPresent == true || reading.sourceCollectedAt != nil {
+                guard let source = reading.sourceCollectedAt, Self.widgetDate(source), source <= date.addingTimeInterval(60) else { return nil }
+                return min(observed, source)
+            }
+            return observed
+        }()
         let provider = Self.widgetText(account.menuAgentPrefix, maximum: 16) ?? "JSON"
         let rawPlan = SubscriptionPlanLabel.displayName(planName: reading?.planName, multiplier: reading?.planMultiplier,
                                                       isCodex: account.provider == .codex || account.menuAgentPrefix == "Codex")
@@ -40,13 +48,18 @@ extension AppStore {
         var resetCards: Int?
         var urgencyWindow: QuotaUrgencyWindow?
         if let reading, observed != nil {
-            let windows = reading.windows.filter { $0.group == "default" && !$0.unlimited }.compactMap { window -> QuotaUrgencyWindow? in
+            let isCursor = account.menuAgentPrefix == "Cursor"
+            let windows = reading.windows.filter {
+                $0.group == "default" && !$0.unlimited && (!isCursor || $0.id.caseInsensitiveCompare("api") == .orderedSame)
+            }.compactMap { window -> QuotaUrgencyWindow? in
                 guard let percent = window.remainingPercent, let start = window.startsAt, let reset = window.resetsAt,
                       Self.widgetDate(start), Self.widgetDate(reset) else { return nil }
                 let label = Self.widgetText(window.title + (window.model.map { " · " + $0 } ?? ""), maximum: 80) ?? "额度"
                 return QuotaUrgencyWindow(label: label, remainingPercent: percent, startsAt: start, resetsAt: reset)
             }
-            urgencyWindow = QuotaUrgency.primaryWindow(from: windows, at: date, isFresh: reading.isFresh(at: date))
+            if let planningDate = reading.isFresh(at: date) ? date : rankingObserved {
+                urgencyWindow = QuotaUrgency.primaryWindow(from: windows, at: planningDate, isFresh: true)
+            }
             for (index, window) in reading.visibleWindows.enumerated() {
                 let value: String
                 let percent: Double?
@@ -83,7 +96,8 @@ extension AppStore {
         }
         return TokenBarWidgetAccount(id: account.id, email: AccountEmail.validated(accountEmail(account)), provider: provider, plan: plan,
                                      status: status, observedAt: observed, freshUntil: freshUntil,
-                                     metrics: metrics, resetCards: resetCards, urgencyWindow: urgencyWindow)
+                                     metrics: metrics, resetCards: resetCards, urgencyWindow: urgencyWindow,
+                                     rankingObservedAt: rankingObserved, rankingObservedAtPresent: true)
     }
 
     private static func widgetDate(_ date: Date) -> Bool {

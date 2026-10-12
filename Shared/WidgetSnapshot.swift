@@ -8,6 +8,7 @@ public enum TokenBarWidgetConstants {
     public static let maximumAccounts = 30
     public static let maximumMetrics = 3
     public static let maximumResetCards = 1_000_000
+    public static let rankingGraceInterval: TimeInterval = 3_600
 }
 
 public enum TokenBarWidgetStatus: String, Codable, Equatable, Sendable {
@@ -38,7 +39,9 @@ public struct TokenBarWidgetSnapshot: Codable, Equatable, Sendable {
 
     public func rankedAccounts(at now: Date) -> [TokenBarWidgetAccount] {
         accounts.enumerated().sorted { first, second in
-            let left = first.element.urgency(at: now), right = second.element.urgency(at: now)
+            let leftTier = first.element.rankingTier(at: now), rightTier = second.element.rankingTier(at: now)
+            if leftTier != rightTier { return leftTier < rightTier }
+            let left = first.element.rankingUrgency(at: now), right = second.element.rankingUrgency(at: now)
             if (left?.level.rank ?? -1) != (right?.level.rank ?? -1) { return (left?.level.rank ?? -1) > (right?.level.rank ?? -1) }
             if (left?.requiredDailyPercent ?? 0) != (right?.requiredDailyPercent ?? 0) { return (left?.requiredDailyPercent ?? 0) > (right?.requiredDailyPercent ?? 0) }
             if let left, let right, left.resetsAt != right.resetsAt { return left.resetsAt < right.resetsAt }
@@ -66,10 +69,15 @@ public struct TokenBarWidgetAccount: Codable, Equatable, Identifiable, Sendable 
     public var metrics: [TokenBarWidgetMetric]
     public var resetCards: Int? = nil
     public var urgencyWindow: QuotaUrgencyWindow? = nil
+    public var rankingObservedAt: Date? = nil
+    // New hosts set this even when the required source time is invalid. Absence
+    // identifies a legacy snapshot eligible for the observedAt-only fallback.
+    public var rankingObservedAtPresent: Bool? = nil
 
     public init(id: UUID, email: String?, provider: String, plan: String?, status: TokenBarWidgetStatus,
                 observedAt: Date?, freshUntil: Date?, metrics: [TokenBarWidgetMetric], resetCards: Int? = nil,
-                urgencyWindow: QuotaUrgencyWindow? = nil) {
+                urgencyWindow: QuotaUrgencyWindow? = nil, rankingObservedAt: Date? = nil,
+                rankingObservedAtPresent: Bool? = nil) {
         self.id = id
         self.email = email
         self.provider = provider
@@ -80,11 +88,48 @@ public struct TokenBarWidgetAccount: Codable, Equatable, Identifiable, Sendable 
         self.metrics = metrics
         self.resetCards = resetCards
         self.urgencyWindow = urgencyWindow
+        self.rankingObservedAt = rankingObservedAt
+        self.rankingObservedAtPresent = rankingObservedAtPresent
     }
 
     public func urgency(at now: Date) -> QuotaUrgencyAssessment? {
         guard let urgencyWindow else { return nil }
         return QuotaUrgency.evaluate(window: urgencyWindow, at: now, isFresh: isFresh(at: now))
+    }
+
+    private var rankingAnchor: Date? {
+        let candidate = rankingObservedAtPresent == true ? rankingObservedAt : rankingObservedAt ?? observedAt
+        guard let candidate, let observedAt,
+              candidate.timeIntervalSince1970.isFinite, observedAt.timeIntervalSince1970.isFinite,
+              (1_577_836_800...4_102_444_800).contains(candidate.timeIntervalSince1970),
+              candidate <= observedAt else { return nil }
+        return candidate
+    }
+
+    public var rankingExpiresAt: Date? {
+        rankingAnchor?.addingTimeInterval(TokenBarWidgetConstants.rankingGraceInterval)
+    }
+
+    public func isWithinRankingGrace(at now: Date) -> Bool {
+        guard let anchor = rankingAnchor, let expiry = rankingExpiresAt,
+              now.timeIntervalSince1970.isFinite, anchor <= now.addingTimeInterval(60) else { return false }
+        return now < expiry
+    }
+
+    /// Recent observations stay eligible without becoming live data. Unknown
+    /// observations follow them; observations at least an hour old go last.
+    public func rankingTier(at now: Date) -> Int {
+        guard let anchor = rankingAnchor, let expiry = rankingExpiresAt,
+              now.timeIntervalSince1970.isFinite, anchor <= now.addingTimeInterval(60) else { return 1 }
+        return now < expiry ? 0 : 2
+    }
+
+    public func rankingUrgency(at now: Date) -> QuotaUrgencyAssessment? {
+        guard isWithinRankingGrace(at: now), let urgencyWindow, let anchor = rankingAnchor else { return nil }
+        if isFresh(at: now) { return urgency(at: now) }
+        // Freeze historical ranking at a real observation, never at the host's
+        // rewrite time or today's clock. UI urgency remains freshness-only.
+        return QuotaUrgency.evaluate(window: urgencyWindow, at: anchor, isFresh: true)
     }
 
     /// Keep reset cards independent and reserve the second visual slot for points.
@@ -149,11 +194,23 @@ public extension TokenBarWidgetSnapshot {
                   account.email.map(Self.validEmail) ?? true,
                   account.observedAt.map(Self.validDate) ?? true,
                   account.freshUntil.map(Self.validDate) ?? true,
+                  account.rankingObservedAt.map(Self.validDate) ?? true,
                   account.metrics.count <= TokenBarWidgetConstants.maximumMetrics,
                   account.resetCards.map({ (0...TokenBarWidgetConstants.maximumResetCards).contains($0) }) ?? true,
                   Set(account.metrics.map(\.id)).count == account.metrics.count else { throw TokenBarWidgetSnapshotError.invalidSnapshot }
             if let until = account.freshUntil {
                 guard let observed = account.observedAt, until <= observed.addingTimeInterval(120) else { throw TokenBarWidgetSnapshotError.invalidSnapshot }
+            }
+            let rankingAnchor = account.rankingObservedAtPresent == true ? account.rankingObservedAt : account.rankingObservedAt ?? account.observedAt
+            if let ranking = rankingAnchor {
+                guard let observed = account.observedAt, ranking <= observed,
+                      ranking <= generatedAt.addingTimeInterval(60) else { throw TokenBarWidgetSnapshotError.invalidSnapshot }
+                if let until = account.freshUntil, until > ranking.addingTimeInterval(120) {
+                    throw TokenBarWidgetSnapshotError.invalidSnapshot
+                }
+            }
+            if account.rankingObservedAtPresent == true && account.rankingObservedAt == nil && account.status == .connected {
+                throw TokenBarWidgetSnapshotError.invalidSnapshot
             }
             if account.status == .connected {
                 guard account.observedAt != nil, account.freshUntil != nil else { throw TokenBarWidgetSnapshotError.invalidSnapshot }
