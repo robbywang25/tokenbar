@@ -6,10 +6,18 @@ struct DashboardView: View {
     @State private var showingConnection = false
     @State private var showingSettings = false
     @State private var expandedAccounts: Set<UUID> = []
+    @State private var selectedTab = "accounts"
+    @State private var calendarDate = Date()
 
     var body: some View {
         VStack(spacing: 0) {
             header
+            Picker("查看内容", selection: $selectedTab) {
+                Text("账号额度").tag("accounts")
+                Text("重置日历").tag("calendar")
+            }
+            .pickerStyle(.segmented).labelsHidden()
+            .padding(.horizontal, 16).padding(.bottom, 10)
             Divider()
             ScrollView {
                 // The source list is bounded to 30 accounts. Eager layout avoids
@@ -24,7 +32,9 @@ struct DashboardView: View {
                             .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
                     }
                     if showingSettings { settings }
-                    if store.accounts.isEmpty {
+                    if selectedTab == "calendar" {
+                        ResetCalendarView(store: store, selectedDate: $calendarDate)
+                    } else if store.accounts.isEmpty {
                         emptyState
                     } else {
                         ForEach(store.accounts) { account in
