@@ -43,7 +43,9 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate
         popover.delegate = self
         popover.animates = true
         popover.contentSize = NSSize(width: 440, height: 620)
-        popover.contentViewController = NSHostingController(rootView: DashboardView(store: store))
+        popover.contentViewController = NSHostingController(rootView: DashboardView(store: store) { [weak self] size in
+            self?.popover.contentSize = size
+        })
         observation = store.objectWillChange
             .debounce(for: .milliseconds(100), scheduler: RunLoop.main)
             .sink { [weak self] in

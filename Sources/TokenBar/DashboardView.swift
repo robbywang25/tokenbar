@@ -1,20 +1,39 @@
 import SwiftUI
 import AppKit
 
+enum DashboardSection: String {
+    case accounts, calendar
+
+    func panelSize(available: CGSize = NSScreen.main?.visibleFrame.size ?? CGSize(width: 1440, height: 900)) -> CGSize {
+        switch self {
+        case .accounts: return CGSize(width: 440, height: 620)
+        case .calendar: return CGSize(width: min(980, available.width - 40), height: min(800, available.height - 50))
+        }
+    }
+}
+
 struct DashboardView: View {
     @ObservedObject var store: AppStore
+    var onPanelSizeChange: (CGSize) -> Void
     @State private var showingConnection = false
     @State private var showingSettings = false
     @State private var expandedAccounts: Set<UUID> = []
-    @State private var selectedTab = "accounts"
+    @State private var selectedTab: DashboardSection
     @State private var calendarDate = Date()
+
+    init(store: AppStore, initialSection: DashboardSection = .accounts,
+         onPanelSizeChange: @escaping (CGSize) -> Void = { _ in }) {
+        self.store = store
+        self._selectedTab = State(initialValue: initialSection)
+        self.onPanelSizeChange = onPanelSizeChange
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Picker("查看内容", selection: $selectedTab) {
-                Text("账号额度").tag("accounts")
-                Text("重置日历").tag("calendar")
+                Text("账号额度").tag(DashboardSection.accounts)
+                Text("重置日历").tag(DashboardSection.calendar)
             }
             .pickerStyle(.segmented).labelsHidden()
             .padding(.horizontal, 16).padding(.bottom, 10)
@@ -32,7 +51,7 @@ struct DashboardView: View {
                             .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
                     }
                     if showingSettings { settings }
-                    if selectedTab == "calendar" {
+                    if selectedTab == .calendar {
                         ResetCalendarView(store: store, selectedDate: $calendarDate)
                     } else if store.accounts.isEmpty {
                         emptyState
@@ -47,8 +66,9 @@ struct DashboardView: View {
             Divider()
             footer
         }
-        .frame(width: 440, height: 620)
+        .frame(width: selectedTab.panelSize().width, height: selectedTab.panelSize().height)
         .background(Color(nsColor: .windowBackgroundColor))
+        .onChange(of: selectedTab) { _, _ in onPanelSizeChange(selectedTab.panelSize()) }
         .sheet(isPresented: $showingConnection) {
             ConnectView(store: store)
         }

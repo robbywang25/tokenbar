@@ -6,6 +6,40 @@ import XCTest
 
 final class DashboardLayoutTests: XCTestCase {
     @MainActor
+    func testCalendarDisplaysEverySameDayItemWithoutSelectionOrHorizontalOverflow() throws {
+        let fixture = try DashboardLayoutFixture()
+        defer { fixture.remove() }
+        let store = fixture.makeStore()
+        fixture.populate(store, crowded: true, stale: false)
+        store.accounts = Array(store.accounts.prefix(6))
+        let ids = Set(store.accounts.map(\.id))
+        store.readings = store.readings.filter { ids.contains($0.key) }.mapValues {
+            var value = $0
+            value.windows = Array(value.windows.prefix(2))
+            // Keep the fixture in the month shown on first opening, independent
+            // of when this test runs. All twelve items share one calendar cell.
+            value.windows = value.windows.map { window in
+                var window = window; window.resetsAt = Date(); return window
+            }
+            return value
+        }
+        let full = store.readings
+        store.readings = full.mapValues { value in
+            var value = value; value.windows = []; return value
+        }
+        let size = DashboardSection.calendar.panelSize()
+        let host = NSHostingView(rootView: DashboardView(store: store, initialSection: .calendar))
+        let window = hiddenWindow(hosting: host, size: size)
+        defer { window.contentView = nil; window.close() }
+        let empty = try layout(host, expectedSize: size)
+        store.readings = full
+        let populated = try layout(host, expectedSize: size)
+        XCTAssertGreaterThan(populated.documentSize.height, empty.documentSize.height + 200,
+                             "Inline items must expand the day immediately, without a day-selection action.")
+        for _ in 0..<5 { assertSameGeometry(populated, try layout(host, expectedSize: size)) }
+    }
+
+    @MainActor
     func testThirtyAccountDashboardKeepsFiniteStableGeometryAcrossRepeatedLayouts() throws {
         let fixture = try DashboardLayoutFixture()
         defer { fixture.remove() }
@@ -82,21 +116,22 @@ final class DashboardLayoutTests: XCTestCase {
     }
 
     @MainActor
-    private func hiddenWindow(hosting host: NSHostingView<DashboardView>) -> NSWindow {
+    private func hiddenWindow(hosting host: NSHostingView<DashboardView>, size: CGSize = CGSize(width: 440, height: 620)) -> NSWindow {
         // AppKit does not finish ScrollView document layout without a window.
         // This test-owned window is never ordered front or activated.
         _ = NSApplication.shared
-        let window = NSWindow(contentRect: CGRect(origin: .zero, size: Self.panelSize),
+        let window = NSWindow(contentRect: CGRect(origin: .zero, size: size),
                               styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = host
-        host.frame = CGRect(origin: .zero, size: Self.panelSize)
+        host.frame = CGRect(origin: .zero, size: size)
         XCTAssertFalse(window.isVisible)
         return window
     }
 
     @MainActor
-    private func layout(_ host: NSHostingView<DashboardView>, file: StaticString = #filePath, line: UInt = #line) throws -> Geometry {
+    private func layout(_ host: NSHostingView<DashboardView>, expectedSize: CGSize = CGSize(width: 440, height: 620),
+                        file: StaticString = #filePath, line: UInt = #line) throws -> Geometry {
         // Drive a local, hidden AppKit view tree. No window is shown and no
         // button action, provider refresh, or real application's UI is invoked.
         host.layoutSubtreeIfNeeded()
@@ -123,13 +158,13 @@ final class DashboardLayoutTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(view.frame.width, 0, file: file, line: line)
             XCTAssertGreaterThanOrEqual(view.frame.height, 0, file: file, line: line)
         }
-        XCTAssertEqual(host.frame.width, Self.panelSize.width, accuracy: 0.5, file: file, line: line)
-        XCTAssertEqual(host.frame.height, Self.panelSize.height, accuracy: 0.5, file: file, line: line)
+        XCTAssertEqual(host.frame.width, expectedSize.width, accuracy: 0.5, file: file, line: line)
+        XCTAssertEqual(host.frame.height, expectedSize.height, accuracy: 0.5, file: file, line: line)
         XCTAssertTrue(fitting.width.isFinite && fitting.height.isFinite, file: file, line: line)
-        XCTAssertEqual(fitting.width, Self.panelSize.width, accuracy: 0.5, file: file, line: line)
-        XCTAssertEqual(fitting.height, Self.panelSize.height, accuracy: 0.5, file: file, line: line)
+        XCTAssertEqual(fitting.width, expectedSize.width, accuracy: 0.5, file: file, line: line)
+        XCTAssertEqual(fitting.height, expectedSize.height, accuracy: 0.5, file: file, line: line)
         XCTAssertGreaterThan(size.width, 0, file: file, line: line)
-        XCTAssertLessThanOrEqual(size.width, Self.panelSize.width + 0.5, file: file, line: line)
+        XCTAssertLessThanOrEqual(size.width, expectedSize.width + 0.5, file: file, line: line)
         XCTAssertGreaterThan(size.height, 0, file: file, line: line)
         return Geometry(fittingSize: fitting, documentSize: size)
     }

@@ -18,7 +18,6 @@ struct ResetCalendarView: View {
     var body: some View {
         let model = model
         let monthEvents = model.events(inMonth: selectedDate, calendar: calendar)
-        let selectedEvents = model.events(on: selectedDate, calendar: calendar)
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text(formatted(selectedDate, "yyyy 年 M 月")).font(.headline)
@@ -42,6 +41,7 @@ struct ResetCalendarView: View {
                         Text("奥克兰时间").tag("Pacific/Auckland")
                         Text("洛杉矶时间").tag("America/Los_Angeles")
                     }
+                    .pickerStyle(.inline)
                 } label: {
                     Text(timeZoneID == "local" ? "本机时间" : timeZoneLabel)
                         .font(.caption)
@@ -49,33 +49,20 @@ struct ResetCalendarView: View {
                 .menuStyle(.borderlessButton).fixedSize()
                 .help(timeZone.identifier).accessibilityLabel("日历时区")
             }
-            VStack(spacing: 4) {
-                HStack(spacing: 4) {
+            Grid(horizontalSpacing: 4, verticalSpacing: 4) {
+                GridRow {
                     ForEach(["一", "二", "三", "四", "五", "六", "日"], id: \.self) { day in
                         Text(day).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity)
                     }
                 }.accessibilityHidden(true)
                 let days = ResetCalendarDates.monthDays(containing: selectedDate, calendar: calendar)
                 ForEach(0..<6, id: \.self) { week in
-                    HStack(spacing: 4) {
+                    GridRow(alignment: .top) {
                         ForEach(Array(days.dropFirst(week * 7).prefix(7)), id: \.self) { day in
                             dayCell(day, events: model.events(on: day, calendar: calendar))
                         }
                     }
                 }
-            }
-            Divider()
-            HStack {
-                Text(formatted(selectedDate, "M 月 d 日 EEEE")).font(.subheadline.weight(.semibold))
-                Spacer()
-                Text("\(selectedEvents.count) 项").font(.caption).foregroundStyle(.secondary)
-            }
-            if selectedEvents.isEmpty {
-                Text("这一天暂无已知重置")
-                    .font(.subheadline).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 48)
-            } else {
-                ForEach(selectedEvents) { event in eventRow(event) }
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text("仅展示平台已提供的日期")
@@ -115,52 +102,46 @@ struct ResetCalendarView: View {
     }
 
     private func dayCell(_ date: Date, events: [ResetCalendarEvent]) -> some View {
-        let selected = calendar.isDate(date, inSameDayAs: selectedDate)
         let today = calendar.isDate(date, inSameDayAs: store.now)
         let inMonth = calendar.isDate(date, equalTo: selectedDate, toGranularity: .month)
-        let current = events.contains { $0.status == .scheduled }
-        return Button { selectedDate = date } label: {
-            VStack(spacing: 3) {
+        return VStack(alignment: .leading, spacing: 5) {
                 Text("\(calendar.component(.day, from: date))")
-                    .font(.system(size: 13, weight: today || selected ? .bold : .regular))
-                    .foregroundStyle(selected || today ? Color.accentColor : inMonth ? .primary : .secondary)
-                Text(events.isEmpty ? " " : "\(events.count) 项")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(current ? Color.accentColor : .secondary)
-            }
-            .frame(maxWidth: .infinity).frame(height: 44)
-            .background(selected ? Color.accentColor.opacity(0.14) : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(today ? Color.accentColor.opacity(0.5) : .clear, lineWidth: 1))
-            .contentShape(Rectangle())
+                    .font(.system(size: 12, weight: today ? .bold : .medium))
+                    .foregroundStyle(today ? Color.accentColor : inMonth ? .primary : .secondary)
+                    .frame(height: 20)
+                ForEach(events) { event in inlineEvent(event) }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(formatted(date, "yyyy 年 M 月 d 日") + (today ? "，今天" : "") + "，\(events.count) 项额度重置")
-        .accessibilityValue(events.map { "\(formatted($0.resetsAt, "HH:mm")) \($0.service) \($0.accountName) \($0.windowLabel) \($0.status.label ?? "")" }.joined(separator: "；"))
-        .accessibilityAddTraits(selected ? [.isSelected] : [])
+        .padding(6)
+        .frame(maxWidth: .infinity, minHeight: 64, maxHeight: .infinity, alignment: .topLeading)
+        .background(today ? Color.accentColor.opacity(0.035) : .clear,
+                    in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6)
+            .strokeBorder(today ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.08), lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(formatted(date, "yyyy 年 M 月 d 日") + (today ? "，今天" : ""))
     }
 
-    private func eventRow(_ event: ResetCalendarEvent) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Text(formatted(event.resetsAt, "HH:mm"))
-                .font(.system(.subheadline, design: .monospaced).weight(.medium))
-                .foregroundStyle(event.status == .scheduled ? Color.accentColor : .secondary)
-                .frame(width: 46, alignment: .leading)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(event.accountName).font(.subheadline.weight(.medium)).lineLimit(2)
-                    Spacer(minLength: 4)
-                    Text(event.service).font(.caption).foregroundStyle(.secondary)
-                }
-                Text(event.windowLabel).font(.caption).foregroundStyle(.secondary)
-                if let status = event.status.label {
-                    Text(status).font(.caption).foregroundStyle(.secondary)
-                }
+    private func inlineEvent(_ event: ResetCalendarEvent) -> some View {
+        let color: Color = event.status == .scheduled ? .accentColor : .secondary
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(formatted(event.resetsAt, "HH:mm"))
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .fixedSize()
+                Text(event.service).font(.system(size: 11, weight: .semibold))
+            }
+            .foregroundStyle(color)
+            Text(event.accountName).font(.system(size: 11))
+                .foregroundStyle(event.status == .scheduled ? .primary : .secondary)
+            Text(event.windowLabel).font(.system(size: 10)).foregroundStyle(.secondary)
+            if let status = event.status.label {
+                Text(status).font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }
-        .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(6).frame(maxWidth: .infinity, alignment: .leading)
+        .background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+        .overlay(alignment: .leading) { RoundedRectangle(cornerRadius: 1).fill(color.opacity(0.7)).frame(width: 2) }
         .accessibilityElement(children: .combine)
         .help(formatted(event.resetsAt, "yyyy-MM-dd HH:mm zzz"))
     }
