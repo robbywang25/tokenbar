@@ -215,6 +215,17 @@ struct DashboardView: View {
                     }
                 } else {
                     compactSummary(reading, fresh: fresh)
+                    ForEach(ClaudeResetDeadline.rows(account: account, reading: reading)) { deadline in
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(deadline.label).foregroundStyle(.secondary)
+                            Spacer(minLength: 8)
+                            Text(deadline.date.map { $0.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour(.twoDigits(amPM: .omitted)).minute(.twoDigits).locale(Locale(identifier: "zh_CN"))) } ?? "未提供")
+                                .monospacedDigit().foregroundStyle(fresh ? .primary : .secondary)
+                        }
+                        .font(.system(size: 10))
+                        .accessibilityElement(children: .combine)
+                        .help((fresh ? "" : "上次读数；") + deadline.label + "：" + (deadline.date.map { $0.formatted(date: .complete, time: .shortened) } ?? "未提供"))
+                    }
                 }
                 if !fresh, !reading.detail.isEmpty, expanded || reading.hasVisibleQuota {
                     Text(reading.detail).font(.system(size: 10)).foregroundStyle(.secondary)
