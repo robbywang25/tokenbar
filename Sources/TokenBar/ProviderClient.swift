@@ -233,6 +233,11 @@ struct ProviderClient {
             result.windows = try windows.enumerated().map { try snapshotWindow($0.element, index: $0.offset) }
             guard Set(result.windows.map(\.id)).count == result.windows.count else { throw ProviderError.invalidData }
         }
+        // Additive and optional: a bad history list cannot reject an otherwise valid balance.
+        result.resetHistory = snapshotResetHistory(account["resetHistory"], at: now)
+        if let epoch = account["resetHistoryIdentity"] as? String, let uuid = UUID(uuidString: epoch) {
+            result.resetHistoryIdentity = uuid.uuidString.lowercased()
+        }
         applyCredits(account["credits"], to: &result)
         applyResetCards(account["resetCredits"], to: &result)
         let hasQuota = !result.windows.isEmpty || result.credits != nil || result.unlimitedCredits || result.resetCardsAvailable != nil
@@ -308,6 +313,30 @@ struct ProviderClient {
         let unit = value["unit"] as? String ?? "percent"
         guard ["percent", "tokens", "requests", "messages", "credits", "USD"].contains(unit) else { throw ProviderError.invalidData }
         return QuotaWindow(id: id, label: safeName(value["label"]) ?? label(id, seconds: number(value["windowSeconds"])), remainingPercent: percent, remaining: remaining, limit: limit, unit: unit, resetsAt: date(value["resetsAt"]), startsAt: date(value["startsAt"]), group: group, model: identifier(value["model"]), unlimited: unlimited)
+    }
+
+    /// Imports observed past resets only. Reserve, future dates, and malformed entries are skipped.
+    /// More than 10,000 entries, or a value that is not an array, drops the field instead of current balances.
+    private static func snapshotResetHistory(_ raw: Any?, at now: Date) -> [QuotaResetRecord]? {
+        guard let raw, !(raw is NSNull) else { return nil }
+        guard let items = raw as? [Any], items.count <= 10_000 else { return nil }
+        var records: [QuotaResetRecord] = []
+        var seen = Set<QuotaResetRecord.DedupeKey>()
+        for case let item as [String: Any] in items {
+            guard let id = identifier(item["id"]), let label = safeName(item["label"]) else { continue }
+            let group = item["quotaGroup"] as? String ?? item["group"] as? String ?? "default"
+            guard ["default", "code-review", "additional"].contains(group) else { continue }
+            let model: String?
+            if let rawModel = item["model"], !(rawModel is NSNull) {
+                guard let parsed = identifier(rawModel) else { continue }
+                model = parsed
+            } else { model = nil }
+            guard let resetsAt = date(item["resetsAt"]), resetsAt <= now else { continue }
+            let record = QuotaResetRecord(id: id, label: label, group: group, model: model, resetsAt: resetsAt)
+            guard QuotaResetRecord.isStorable(record), seen.insert(record.dedupeKey).inserted else { continue }
+            records.append(record)
+        }
+        return records
     }
 
     private static func object(_ data: Data) throws -> [String: Any] {

@@ -24,6 +24,9 @@ final class AppStore: ObservableObject {
     var onWidgetSnapshotChange: ((TokenBarWidgetSnapshot) -> Void)?
 
     private var rememberedAccountEmails: [UUID: RememberedAccountEmail] = [:]
+    private(set) var resetCalendarHistory = ResetCalendarHistory()
+    private var persistedResetCalendarHistory = ResetCalendarHistory()
+    private var resetCalendarHistoryReadFailed = false
     private let client: ProviderClient
     private let directory: URL
     private let defaults: UserDefaults
@@ -78,6 +81,11 @@ final class AppStore: ObservableObject {
 
     func accountIdentityLabel(_ account: AccountConfig) -> String {
         accountEmail(account) ?? "邮箱待确认"
+    }
+
+    func calendarModel(at date: Date? = nil) -> ResetCalendarModel {
+        ResetCalendarModel(accounts: accounts, readings: readings, history: isDemo ? ResetCalendarHistory() : resetCalendarHistory,
+                           now: date ?? now, identity: accountIdentityLabel)
     }
 
     func accountIdentityHelp(_ account: AccountConfig) -> String {
@@ -354,6 +362,8 @@ final class AppStore: ObservableObject {
             }
             var results: [UUID: AccountReading] = [:]
             for await (id, reading) in group { results[id] = reading }
+            let baseline = readings
+            now = Date()
             var identities = Set<String>()
             for config in configs {
                 let id = config.id
@@ -361,10 +371,11 @@ final class AppStore: ObservableObject {
                 if let identity = reading.identityKey, !identities.insert(identity).inserted {
                     reading = AccountReading(status: .notConfigured, checkedAt: Date(), lastSuccessAt: nil, detail: ProviderError.duplicate.message)
                 }
+                recordResetHistory(account: config, previous: baseline[id], next: reading)
                 readings[id] = reading
             }
         }
-        if revision == currentRevision { lastRefresh = Date(); rememberAccountEmails(); rememberMenuChoices(); persistReadings() }
+        if revision == currentRevision { lastRefresh = Date(); rememberAccountEmails(); rememberMenuChoices(); persistReadings(); persistResetCalendarHistoryIfNeeded() }
         now = Date()
         isRefreshing = false
         if revision == currentRevision { publishWidgetSnapshot() }
@@ -395,11 +406,14 @@ final class AppStore: ObservableObject {
             try save(updated, name: "accounts.json")
             revision += 1
             accounts = updated
+            now = Date()
+            recordResetHistory(account: config, previous: nil, next: reading)
             readings[config.id] = reading
             rememberAccountEmails()
             rememberMenuChoices()
-            persistReadings()
             errorMessage = nil
+            persistReadings()
+            persistResetCalendarHistoryIfNeeded()
             publishWidgetSnapshot()
         } catch {
             if savedSecret { CredentialStore.delete(account: config.id.uuidString) }
@@ -432,7 +446,9 @@ final class AppStore: ObservableObject {
             if !isDemo {
                 if config.method == .snapshotURL { CredentialStore.delete(account: config.id.uuidString) }
                 pruneExpiryReceipts(at: Date())
+                resetCalendarHistory.removeAccount(config.id)
                 persistReadings()
+                persistResetCalendarHistoryIfNeeded()
                 publishWidgetSnapshot()
             }
         } catch { errorMessage = "无法保存账号变更，请检查本机存储权限。" }
@@ -477,12 +493,73 @@ final class AppStore: ObservableObject {
         }
         // Clear mismatched persisted readings before removing their binding guard;
         // otherwise a second restart could revive the old source's email/balance.
+        loadResetCalendarHistory()
         if invalidatedReading {
             do { try save(readings, name: "readings.json") }
             catch { errorMessage = "旧来源缓存未能清理，当前读数已隐藏。"; return }
         }
         rememberAccountEmails()
         rememberMenuChoices(persist: false)
+    }
+
+    private func loadResetCalendarHistory() {
+        let decoded: ResetCalendarHistory
+        resetCalendarHistoryReadFailed = false
+        do { decoded = try readResetCalendarHistory() }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { decoded = ResetCalendarHistory() }
+        catch {
+            resetCalendarHistoryReadFailed = true
+            resetCalendarHistory = ResetCalendarHistory()
+            persistedResetCalendarHistory = resetCalendarHistory
+            errorMessage = "重置历史未能读取，原文件已保留。"
+            return
+        }
+        let cleaned = decoded.sanitized(accounts: accounts, readings: readings)
+        resetCalendarHistory = cleaned
+        if accounts.isEmpty && !decoded.accounts.isEmpty {
+            // An unreadable account list must not be treated as deletion of the history file.
+            persistedResetCalendarHistory = cleaned
+            return
+        }
+        persistedResetCalendarHistory = decoded
+        // Seed from the existing cache before the first network refresh can
+        // replace it with a new cycle. This also persists imported source history.
+        for account in accounts {
+            if let reading = readings[account.id] {
+                resetCalendarHistory.incorporate(account: account, previous: nil, next: reading, at: now)
+            }
+        }
+        persistResetCalendarHistoryIfNeeded()
+    }
+
+    private func readResetCalendarHistory() throws -> ResetCalendarHistory {
+        let url = directory.appendingPathComponent(ResetCalendarHistory.fileName)
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true, let size = values.fileSize, size <= ResetCalendarHistory.maximumStoredBytes else { throw ProviderError.invalidData }
+        let data = try Data(contentsOf: url)
+        guard data.count <= ResetCalendarHistory.maximumStoredBytes else { throw ProviderError.invalidData }
+        return try JSONDecoder().decode(ResetCalendarHistory.self, from: data)
+    }
+
+    private func recordResetHistory(account: AccountConfig, previous: AccountReading?, next: AccountReading) {
+        guard !isDemo else { return }
+        resetCalendarHistory.incorporate(account: account, previous: previous, next: next, at: now)
+    }
+
+    private func persistResetCalendarHistoryIfNeeded() {
+        guard !isDemo, resetCalendarHistory != persistedResetCalendarHistory else { return }
+        guard !resetCalendarHistoryReadFailed else { errorMessage = "重置历史未能读取，原文件已保留。"; return }
+        let url = directory.appendingPathComponent(ResetCalendarHistory.fileName)
+        do {
+            if resetCalendarHistory.accounts.isEmpty {
+                if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+            } else {
+                let encoded = try JSONEncoder().encode(resetCalendarHistory)
+                guard encoded.count <= ResetCalendarHistory.maximumStoredBytes else { throw ProviderError.unavailable }
+                try save(resetCalendarHistory, name: ResetCalendarHistory.fileName)
+            }
+            persistedResetCalendarHistory = resetCalendarHistory
+        } catch { errorMessage = ResetCalendarHistory.persistenceError }
     }
 
     private func read<T: Decodable>(_ type: T.Type, name: String) throws -> T {
@@ -509,7 +586,9 @@ final class AppStore: ObservableObject {
 
     private func persistReadings() {
         guard !isDemo else { return }
-        do { try save(readings, name: "readings.json") }
+        var cache = readings
+        for id in cache.keys { cache[id]?.resetHistory = nil }
+        do { try save(cache, name: "readings.json") }
         catch { errorMessage = "最新读数未能缓存到本机。" }
     }
 

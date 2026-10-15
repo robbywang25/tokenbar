@@ -8,7 +8,7 @@ struct ResetCalendarEvent: Identifiable, Equatable {
             switch self {
             case .scheduled: return nil
             case .stale: return "待核实"
-            case .expired: return "已到期，待核实"
+            case .expired: return "已过期"
             }
         }
     }
@@ -18,7 +18,6 @@ struct ResetCalendarEvent: Identifiable, Equatable {
         let windowID: String
         let group: String
         let model: String?
-        let label: String
         let resetsAt: Date
     }
 
@@ -37,33 +36,36 @@ struct ResetCalendarModel {
     let missingAccounts: Int
     let missingWindows: Int
 
-    init(accounts: [AccountConfig], readings: [UUID: AccountReading], now: Date,
+    init(accounts: [AccountConfig], readings: [UUID: AccountReading], history: ResetCalendarHistory = ResetCalendarHistory(), now: Date,
          identity: (AccountConfig) -> String) {
         var events: [ResetCalendarEvent] = []
         var missingAccounts = 0, missingWindows = 0
         var seenAccounts = Set<UUID>()
         for account in accounts where account.enabled && seenAccounts.insert(account.id).inserted {
-            guard let reading = readings[account.id], !reading.visibleWindows.isEmpty else {
-                missingAccounts += 1
-                continue
-            }
+            let reading = readings[account.id]
+            if reading?.visibleWindows.isEmpty ?? true { missingAccounts += 1 }
             var seen = Set<ResetCalendarEvent.ID>()
-            for window in reading.visibleWindows {
-                guard let reset = window.resetsAt,
-                      reset.timeIntervalSince1970.isFinite,
-                      reset.timeIntervalSince1970 > 0,
-                      reset.timeIntervalSince1970 < 253_402_300_800 else {
-                    missingWindows += 1
-                    continue
+            func append(_ id: ResetCalendarEvent.ID, label: String, reset: Date, status: ResetCalendarEvent.Status) {
+                guard seen.insert(id).inserted else { return }
+                events.append(ResetCalendarEvent(id: id, accountName: identity(account), service: account.menuAgentPrefix,
+                    windowLabel: label, resetsAt: reset, status: status))
+            }
+            if let reading {
+                for window in reading.visibleWindows {
+                    guard let reset = window.resetsAt, ResetCalendarInstant.isValid(reset) else {
+                        missingWindows += 1
+                        continue
+                    }
+                    append(ResetCalendarEvent.ID(accountID: account.id, windowID: window.id, group: window.group, model: window.model, resetsAt: reset),
+                           label: window.title + (window.model.map { " · " + $0 } ?? ""), reset: reset,
+                           status: reset <= now ? .expired : reading.isFresh(at: now) ? .scheduled : .stale)
                 }
-                let id = ResetCalendarEvent.ID(accountID: account.id, windowID: window.id,
-                    group: window.group, model: window.model, label: window.label, resetsAt: reset)
-                guard seen.insert(id).inserted else { continue }
-                events.append(ResetCalendarEvent(id: id, accountName: identity(account),
-                    service: account.menuAgentPrefix,
-                    windowLabel: window.title + (window.model.map { " · " + $0 } ?? ""),
-                    resetsAt: reset,
-                    status: reset <= now ? .expired : reading.isFresh(at: now) ? .scheduled : .stale))
+            }
+            let remembered = history.records(for: account, reading: reading) + (reading?.resetHistory ?? []).filter { $0.resetsAt <= now }
+            for record in remembered where record.group != "reserve" && ResetCalendarInstant.isValid(record.resetsAt) {
+                append(ResetCalendarEvent.ID(accountID: account.id, windowID: record.id, group: record.group, model: record.model, resetsAt: record.resetsAt),
+                       label: Self.displayLabel(group: record.group, label: record.label, model: record.model), reset: record.resetsAt,
+                       status: record.resetsAt <= now ? .expired : .stale)
             }
         }
         self.events = events.sorted {
@@ -74,6 +76,19 @@ struct ResetCalendarModel {
         }
         self.missingAccounts = missingAccounts
         self.missingWindows = missingWindows
+    }
+
+    /// Past events stay in the month count. Only a future date that is no longer fresh is unverified.
+    func summary(in events: [ResetCalendarEvent]) -> String {
+        guard !events.isEmpty else { return "本月暂无已知重置" }
+        let unverified = events.filter { $0.status == .stale }.count
+        return "本月 \(events.count) 项重置" + (unverified > 0 ? "，\(unverified) 项待核实" : "")
+    }
+
+    private static func displayLabel(group: String, label: String, model: String?) -> String {
+        let prefix = group == "reserve" ? "Reserve" : group == "code-review" ? "代码审查" : group == "additional" ? "附加" : ""
+        let title = prefix.isEmpty ? label : "\(prefix) · \(label)"
+        return title + (model.map { " · " + $0 } ?? "")
     }
 
     func events(on day: Date, calendar: Calendar) -> [ResetCalendarEvent] {

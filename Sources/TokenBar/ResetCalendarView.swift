@@ -9,15 +9,12 @@ struct ResetCalendarView: View {
         timeZoneID == "local" ? .autoupdatingCurrent : TimeZone(identifier: timeZoneID) ?? .autoupdatingCurrent
     }
     private var calendar: Calendar { ResetCalendarDates.calendar(timeZone: timeZone) }
-    private var model: ResetCalendarModel {
-        ResetCalendarModel(accounts: store.accounts, readings: store.readings, now: store.now) {
-            store.accountIdentityLabel($0)
-        }
-    }
+    private var model: ResetCalendarModel { store.calendarModel() }
 
     var body: some View {
         let model = model
         let monthEvents = model.events(inMonth: selectedDate, calendar: calendar)
+        let eventsByDay = Dictionary(grouping: model.events) { calendar.startOfDay(for: $0.resetsAt) }
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text(formatted(selectedDate, "yyyy 年 M 月")).font(.headline)
@@ -30,7 +27,7 @@ struct ResetCalendarView: View {
             }
             .buttonStyle(.borderless)
             HStack {
-                Text(monthSummary(monthEvents)).font(.caption).foregroundStyle(.secondary)
+                Text(model.summary(in: monthEvents)).font(.caption).foregroundStyle(.secondary)
                 Spacer(minLength: 4)
                 Menu {
                     Picker("日历时区", selection: $timeZoneID) {
@@ -59,7 +56,7 @@ struct ResetCalendarView: View {
                 ForEach(0..<6, id: \.self) { week in
                     GridRow(alignment: .top) {
                         ForEach(Array(days.dropFirst(week * 7).prefix(7)), id: \.self) { day in
-                            dayCell(day, events: model.events(on: day, calendar: calendar))
+                            dayCell(day, events: eventsByDay[calendar.startOfDay(for: day)] ?? [])
                         }
                     }
                 }
@@ -93,12 +90,6 @@ struct ResetCalendarView: View {
         formatter.timeZone = timeZone
         formatter.dateFormat = pattern
         return formatter.string(from: date)
-    }
-
-    private func monthSummary(_ events: [ResetCalendarEvent]) -> String {
-        guard !events.isEmpty else { return "本月暂无已知重置" }
-        let pending = events.filter { $0.status != .scheduled }.count
-        return "本月 \(events.count) 项重置" + (pending > 0 ? "，\(pending) 项待核实" : "")
     }
 
     private func dayCell(_ date: Date, events: [ResetCalendarEvent]) -> some View {

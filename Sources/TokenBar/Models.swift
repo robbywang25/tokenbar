@@ -134,6 +134,58 @@ struct QuotaWindow: Codable, Identifiable, Equatable {
     }
 }
 
+/// One observed reset instant. Balances, credentials, and account names do not belong here.
+struct QuotaResetRecord: Codable, Equatable {
+    var id: String
+    var label: String
+    var group: String
+    var model: String? = nil
+    var resetsAt: Date
+
+    var windowKey: WindowKey { WindowKey(id: id, group: group, model: model) }
+    var dedupeKey: DedupeKey { DedupeKey(id: id, group: group, model: model, resetsAt: resetsAt) }
+
+    struct WindowKey: Hashable {
+        var id: String
+        var group: String
+        var model: String?
+    }
+
+    struct DedupeKey: Hashable {
+        var id: String
+        var group: String
+        var model: String?
+        var resetsAt: Date
+    }
+
+    init(id: String, label: String, group: String, model: String? = nil, resetsAt: Date) {
+        self.id = id
+        self.label = label
+        self.group = group
+        self.model = model
+        self.resetsAt = resetsAt
+    }
+
+    init?(window: QuotaWindow) {
+        guard let resetsAt = window.resetsAt else { return nil }
+        self.init(id: window.id, label: window.label, group: window.group, model: window.model, resetsAt: resetsAt)
+        guard Self.isStorable(self) else { return nil }
+    }
+
+    static func isStorable(_ record: QuotaResetRecord) -> Bool {
+        guard ResetCalendarInstant.isValid(record.resetsAt),
+              (1...256).contains(record.id.count),
+              record.id.range(of: "^[A-Za-z0-9._:@+/-]+$", options: .regularExpression) != nil,
+              (1...80).contains(record.label.count),
+              record.label.rangeOfCharacter(from: .controlCharacters) == nil,
+              ["default", "code-review", "additional"].contains(record.group) else { return false }
+        if let model = record.model {
+            guard (1...256).contains(model.count), model.rangeOfCharacter(from: .controlCharacters) == nil else { return false }
+        }
+        return true
+    }
+}
+
 struct ResetCard: Codable, Equatable {
     var status: String
     var expiresAt: Date?
@@ -161,6 +213,9 @@ struct AccountReading: Codable, Equatable {
     var sourceCollectedAtPresent: Bool? = nil
     var reason: String? = nil
     var retryAt: Date? = nil
+    // Past resets supplied by a source. Never an input to windows, freshness, menus, widgets, or alerts.
+    var resetHistory: [QuotaResetRecord]? = nil
+    var resetHistoryIdentity: String? = nil
 
     var visibleWindows: [QuotaWindow] { windows.filter(\.isVisibleInUI) }
     var hasVisibleSupplementalQuota: Bool { credits != nil || unlimitedCredits || resetCardsAvailable != nil }

@@ -74,8 +74,9 @@ final class ResetCalendarTests: XCTestCase {
         let result = model([first], [first.id: reading([window(reset: now)])])
         XCTAssertEqual(result.events.count, 1)
         XCTAssertEqual(result.events.first?.status, .expired)
-        XCTAssertEqual(result.events.first?.status.label, "已到期，待核实")
+        XCTAssertEqual(result.events.first?.status.label, "已过期")
         XCTAssertEqual(result.events.first?.resetsAt, now)
+        XCTAssertEqual(result.summary(in: result.events), "本月 1 项重置")
     }
 
     func testAuthenticationAndSourceFreshnessCannotBeRenewedByReadingCache() {
@@ -158,5 +159,41 @@ final class ResetCalendarTests: XCTestCase {
         XCTAssertEqual(updated.events.first?.status, .scheduled)
         XCTAssertNotEqual(updated.events.first?.id, old.events.first?.id)
         XCTAssertFalse(updated.events.contains { $0.resetsAt == reset })
+    }
+
+    func testMonthlySummaryCountsOnlyFutureStaleResets() {
+        let first = account()
+        let past = window("weekly", reset: now)
+        let future = window("daily", reset: now.addingTimeInterval(3_600))
+        let result = model([first], [first.id: reading([past, future])])
+        XCTAssertEqual(result.events.map(\.status), [.expired, .stale])
+        XCTAssertEqual(result.summary(in: result.events), "本月 2 项重置，1 项待核实")
+        XCTAssertEqual(result.summary(in: []), "本月暂无已知重置")
+        let scheduled = model([first], [first.id: reading([future])])
+        XCTAssertEqual(scheduled.summary(in: scheduled.events), "本月 1 项重置")
+    }
+
+    func testHistoryRemainsWhenTheCurrentReadingHasNoWindowsAndLabelChangesDoNotDuplicate() {
+        let first = account(), disabled = account("disabled", enabled: false)
+        let past = now.addingTimeInterval(-3_600), future = now.addingTimeInterval(86_400)
+        var history = ResetCalendarHistory()
+        history.accounts[first.id] = .init(sourceSignature: AccountEmail.sourceSignature(first),
+            pending: [QuotaResetRecord(id: "daily", label: "每日", group: "default", resetsAt: future)],
+            archived: [QuotaResetRecord(id: "weekly", label: "旧标签", group: "default", resetsAt: past)])
+        history.accounts[disabled.id] = history.accounts[first.id]
+        var reading = self.reading([window("weekly", reset: past)])
+        reading.windows[0].label = "新标签"
+        reading.resetHistory = [QuotaResetRecord(id: "weekly", label: "服务端标签", group: "default", resetsAt: past)]
+        let outage = AccountReading(status: .unavailable, checkedAt: now, detail: "暂时无法连接数据来源，请检查网络后重试。")
+        let merged = ResetCalendarModel(accounts: [first], readings: [first.id: reading], history: history, now: now, identity: { $0.name })
+        XCTAssertEqual(merged.events.count, 2)
+        XCTAssertEqual(merged.events.first?.windowLabel, "新标签")
+        XCTAssertEqual(merged.events.first?.status, .expired)
+        XCTAssertEqual(merged.events.last?.status, .stale)
+        let hidden = ResetCalendarModel(accounts: [first, disabled], readings: [first.id: outage], history: history, now: now, identity: { $0.name })
+        XCTAssertEqual(hidden.events.map(\.resetsAt), [past, future])
+        XCTAssertEqual(hidden.missingAccounts, 1)
+        XCTAssertTrue(ResetCalendarModel(accounts: [disabled], readings: [:], history: history, now: now, identity: { $0.name }).events.isEmpty)
+        XCTAssertFalse(history.accounts[disabled.id]?.archived.isEmpty ?? true)
     }
 }
