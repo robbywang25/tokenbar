@@ -94,7 +94,7 @@ struct DashboardView: View {
                 }
             }
             .buttonStyle(.plain).frame(width: 32, height: 36)
-            .disabled(store.isRefreshing || store.accounts.isEmpty)
+            .disabled(store.isRefreshing || (store.accounts.isEmpty && store.snapshotSources.isEmpty))
             .help("刷新全部账号").accessibilityLabel("刷新全部账号")
             Button { showingConnection = true } label: {
                 Image(systemName: "plus").fontWeight(.medium).frame(width: 32, height: 36)
@@ -484,6 +484,25 @@ struct DashboardView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Divider()
+            if !store.snapshotSources.isEmpty {
+                ForEach(store.snapshotSources) { source in
+                    VStack(alignment: .leading, spacing: 5) {
+                        Toggle("自动加入新账号 · \(source.connection.name)", isOn: Binding(
+                            get: { source.discoversAccounts },
+                            set: { store.setAccountDiscovery(source.id, enabled: $0) }
+                        ))
+                        .toggleStyle(.switch).controlSize(.small)
+                        if !source.excludedAccountIDs.isEmpty {
+                            Button("恢复已移除的 \(source.excludedAccountIDs.count) 个账号") {
+                                store.restoreExcludedAccounts(source.id)
+                            }.buttonStyle(.link).font(.caption)
+                        }
+                        Button("断开此来源", role: .destructive) { store.disconnectSnapshotSource(source.id) }
+                            .buttonStyle(.link).font(.caption)
+                    }
+                }
+                Divider()
+            }
             if Bundle.main.object(forInfoDictionaryKey: "TokenBarAppGroup") is String {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("桌面小组件").font(.subheadline.weight(.medium))

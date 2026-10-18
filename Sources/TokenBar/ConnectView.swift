@@ -12,6 +12,7 @@ struct ConnectView: View {
     @State private var sshHost = ""
     @State private var sshUseSudo = false
     @State private var serviceLabel = ""
+    @State private var discoversAccounts = false
     @State private var isConnecting = false
     @State private var errorMessage: String?
 
@@ -68,16 +69,18 @@ struct ConnectView: View {
                     sourceFields
 
                     if provider == .snapshot {
+                        Toggle("自动加入此来源的新账号", isOn: $discoversAccounts)
+                            .toggleStyle(.checkbox)
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("服务名称（可选）").font(.caption.weight(.medium))
+                            Text(discoversAccounts ? "来源名称（可选）" : "服务名称（可选）").font(.caption.weight(.medium))
                             TextField("例如：Codex、Claude、公司 Agent", text: $serviceLabel)
                                 .textFieldStyle(.roundedBorder)
                         }
-                        VStack(alignment: .leading, spacing: 6) {
+                        if !discoversAccounts { VStack(alignment: .leading, spacing: 6) {
                             Text("数据源账号 ID（多账号文件必填）").font(.caption.weight(.medium))
                             TextField("单账号来源可留空", text: $sourceAccountID)
                                 .textFieldStyle(.roundedBorder)
-                        }
+                        } }
                     }
 
                     if method == .snapshotURL {
@@ -242,6 +245,7 @@ struct ConnectView: View {
         clearSource()
         sourceAccountID = ""
         serviceLabel = ""
+        discoversAccounts = false
     }
 
     private func clearSource() {
@@ -286,7 +290,11 @@ struct ConnectView: View {
             serviceLabel: provider == .snapshot && !trimmedService.isEmpty ? trimmedService : nil
         )
         do {
-            try await store.connect(config, secret: secret.isEmpty ? nil : secret)
+            if provider == .snapshot && discoversAccounts {
+                try await store.connectSnapshotSource(config, secret: secret.isEmpty ? nil : secret)
+            } else {
+                try await store.connect(config, secret: secret.isEmpty ? nil : secret)
+            }
             secret = ""
             dismiss()
         } catch let error as ProviderError {

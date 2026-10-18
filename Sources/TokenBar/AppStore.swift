@@ -7,6 +7,7 @@ import TokenBarWidgetShared
 @MainActor
 final class AppStore: ObservableObject {
     @Published var accounts: [AccountConfig] = []
+    @Published private(set) var snapshotSources: [SnapshotSource] = []
     @Published var readings: [UUID: AccountReading] = [:]
     @Published var isRefreshing = false
     @Published var errorMessage: String?
@@ -45,6 +46,7 @@ final class AppStore: ObservableObject {
     private var revision = 0
     private var wakeObserver: NSObjectProtocol?
     private var connecting = false
+    private var snapshotSourcesReadFailed = false
 
     init(directory: URL? = nil, client: ProviderClient = ProviderClient(), startTimers: Bool = true, defaults: UserDefaults = .standard) {
         self.client = client
@@ -347,10 +349,28 @@ final class AppStore: ObservableObject {
         rememberMenuChoices()
         isRefreshing = true
         let currentRevision = revision
-        let configs = accounts.filter(\.enabled)
         let provider = client
+        var catalogs: [UUID: SnapshotCatalog] = [:]
+        var sourceErrors: [UUID: ProviderError] = [:]
+        await withTaskGroup(of: (UUID, Result<SnapshotCatalog, ProviderError>).self) { group in
+            for source in snapshotSources {
+                group.addTask {
+                    do { return (source.id, .success(try await provider.fetchCatalog(source.connection))) }
+                    catch { return (source.id, .failure(error as? ProviderError ?? .unavailable)) }
+                }
+            }
+            for await (id, result) in group {
+                switch result {
+                case .success(let catalog): catalogs[id] = catalog
+                case .failure(let error): sourceErrors[id] = error
+                }
+            }
+        }
+        guard revision == currentRevision else { isRefreshing = false; return }
+        reconcileSnapshotAccounts(catalogs)
+        let configs = accounts.filter(\.enabled)
         await withTaskGroup(of: (UUID, AccountReading).self) { group in
-            for config in configs {
+            for config in configs where config.snapshotSourceID == nil {
                 group.addTask {
                     do { return (config.id, try await provider.fetch(config)) }
                     catch {
@@ -362,6 +382,17 @@ final class AppStore: ObservableObject {
             }
             var results: [UUID: AccountReading] = [:]
             for await (id, reading) in group { results[id] = reading }
+            for config in configs {
+                guard let sourceID = config.snapshotSourceID else { continue }
+                if let entry = catalogs[sourceID]?.entries.first(where: { $0.id == config.sourceAccountID }) {
+                    results[config.id] = entry.reading
+                } else {
+                    let error = sourceErrors[sourceID] ?? .unavailable
+                    results[config.id] = AccountReading(status: error == .needsAuth ? .needsAuth : .unavailable,
+                        checkedAt: Date(), lastSuccessAt: nil,
+                        detail: catalogs[sourceID] == nil ? error.message : "来源暂未返回此账号，等待下次同步。")
+                }
+            }
             let baseline = readings
             now = Date()
             var identities = Set<String>()
@@ -381,8 +412,115 @@ final class AppStore: ObservableObject {
         if revision == currentRevision { publishWidgetSnapshot() }
     }
 
+    /// Source subscriptions are explicit; upgrading never scans unrelated files
+    /// or silently expands a manually selected single-account connection.
+    func connectSnapshotSource(_ config: AccountConfig, secret: String? = nil) async throws {
+        guard !connecting, !snapshotSourcesReadFailed, snapshotSources.count < 30,
+              config.provider == .snapshot,
+              !accounts.contains(where: { $0.id == config.id }),
+              [.snapshotFile, .snapshotURL, .snapshotSSH].contains(config.method),
+              !config.name.isEmpty, config.name.count <= 80, config.location.count <= 4096,
+              !snapshotSources.contains(where: { $0.id == config.id ||
+                  ($0.connection.method == config.method && config.method != .snapshotURL &&
+                   SnapshotSource.locationKey($0.connection) == SnapshotSource.locationKey(config)) }) else {
+            throw ProviderError.invalidConfiguration
+        }
+        connecting = true
+        defer { connecting = false }
+        var savedSecret = false
+        if let secret, !secret.isEmpty {
+            guard config.method == .snapshotURL, secret.count <= 16384,
+                  !secret.contains("\n"), !secret.contains("\r") else { throw ProviderError.invalidConfiguration }
+            try CredentialStore.save(Data(secret.utf8), account: config.id.uuidString)
+            savedSecret = true
+        }
+        do {
+            _ = try await client.fetchCatalog(config)
+            if isDemo { exitDemo() }
+            let updated = snapshotSources + [SnapshotSource(connection: config)]
+            try save(updated, name: "snapshot-sources.json")
+            snapshotSources = updated
+            revision += 1
+            await refresh()
+        } catch {
+            if savedSecret { CredentialStore.delete(account: config.id.uuidString) }
+            throw error
+        }
+    }
+
+    func setAccountDiscovery(_ id: UUID, enabled: Bool) {
+        guard !isDemo, !snapshotSourcesReadFailed,
+              let index = snapshotSources.firstIndex(where: { $0.id == id }) else { return }
+        var updated = snapshotSources
+        updated[index].discoversAccounts = enabled
+        do {
+            try save(updated, name: "snapshot-sources.json")
+            snapshotSources = updated
+            revision += 1
+        } catch { errorMessage = "账号同步设置未能保存。" }
+    }
+
+    func restoreExcludedAccounts(_ id: UUID) {
+        guard !isDemo, !snapshotSourcesReadFailed,
+              let index = snapshotSources.firstIndex(where: { $0.id == id }) else { return }
+        var updated = snapshotSources
+        updated[index].excludedAccountIDs = []
+        do {
+            try save(updated, name: "snapshot-sources.json")
+            snapshotSources = updated
+            revision += 1
+            Task { await refresh() }
+        } catch { errorMessage = "账号同步设置未能保存。" }
+    }
+
+    func disconnectSnapshotSource(_ id: UUID) {
+        guard !isDemo, !snapshotSourcesReadFailed,
+              let source = snapshotSources.first(where: { $0.id == id }) else { return }
+        let updated = snapshotSources.filter { $0.id != id }
+        do {
+            // Stop requests first. A failed account-cache cleanup must never
+            // resume a connection the user explicitly disconnected.
+            try save(updated, name: "snapshot-sources.json")
+            snapshotSources = updated
+            revision += 1
+            for account in accounts.filter({ $0.snapshotSourceID == id }) { remove(account) }
+            if source.connection.method == .snapshotURL { CredentialStore.delete(account: id.uuidString) }
+        } catch { errorMessage = "无法保存来源变更，请检查本机存储权限。" }
+    }
+
+    private func reconcileSnapshotAccounts(_ catalogs: [UUID: SnapshotCatalog]) {
+        var updated = accounts
+        for source in snapshotSources {
+            // Honor an exclusion even if a previous account-list write failed.
+            updated.removeAll { $0.snapshotSourceID == source.id && source.excludedAccountIDs.contains($0.sourceAccountID) }
+            guard let catalog = catalogs[source.id] else { continue }
+            for entry in catalog.entries where !source.excludedAccountIDs.contains(entry.id) {
+                if let index = updated.firstIndex(where: { source.owns($0) && $0.sourceAccountID == entry.id }) {
+                    updated[index].snapshotSourceID = source.id
+                    if updated[index].serviceLabel == nil { updated[index].serviceLabel = entry.serviceLabel }
+                } else if source.discoversAccounts && entry.shouldDiscover {
+                    guard updated.count < 1_000 else { errorMessage = "账号数量超过上限，新增账号未能同步。"; return }
+                    var account = source.connection
+                    account.id = UUID()
+                    account.sourceAccountID = entry.id
+                    account.name = entry.serviceLabel
+                    account.serviceLabel = entry.serviceLabel
+                    account.snapshotSourceID = source.id
+                    updated.append(account)
+                }
+            }
+        }
+        guard updated != accounts else { return }
+        do {
+            try save(updated, name: "accounts.json")
+            let removed = Set(accounts.map(\.id)).subtracting(updated.map(\.id))
+            for id in removed { readings.removeValue(forKey: id); resetCalendarHistory.removeAccount(id) }
+            accounts = updated
+        } catch { errorMessage = "新增账号未能保存，稍后会再次同步。" }
+    }
+
     func connect(_ config: AccountConfig, secret: String? = nil) async throws {
-        guard !connecting, accounts.count < 30 else { throw ProviderError.invalidConfiguration }
+        guard !connecting, accounts.count < 1_000 else { throw ProviderError.invalidConfiguration }
         connecting = true
         defer { connecting = false }
         guard !config.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -438,13 +576,21 @@ final class AppStore: ObservableObject {
         var updated = accounts
         updated.removeAll { $0.id == config.id }
         do {
+            if !isDemo, let sourceID = config.snapshotSourceID,
+               let index = snapshotSources.firstIndex(where: { $0.id == sourceID }) {
+                guard !snapshotSourcesReadFailed else { throw ProviderError.invalidConfiguration }
+                var sources = snapshotSources
+                sources[index].excludedAccountIDs.insert(config.sourceAccountID)
+                try save(sources, name: "snapshot-sources.json")
+                snapshotSources = sources
+            }
             if !isDemo { try save(updated, name: "accounts.json") }
             revision += 1
             accounts = updated; readings.removeValue(forKey: config.id)
             rememberAccountEmails()
             rememberMenuChoices()
             if !isDemo {
-                if config.method == .snapshotURL { CredentialStore.delete(account: config.id.uuidString) }
+                if config.method == .snapshotURL && config.snapshotSourceID == nil { CredentialStore.delete(account: config.id.uuidString) }
                 pruneExpiryReceipts(at: Date())
                 resetCalendarHistory.removeAccount(config.id)
                 persistReadings()
@@ -481,6 +627,19 @@ final class AppStore: ObservableObject {
 
     private func load() {
         defer { publishWidgetSnapshot() }
+        snapshotSourcesReadFailed = false
+        do {
+            snapshotSources = try read([SnapshotSource].self, name: "snapshot-sources.json")
+            guard snapshotSources.count <= 30, Set(snapshotSources.map(\.id)).count == snapshotSources.count else {
+                throw ProviderError.invalidData
+            }
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            snapshotSources = []
+        } catch {
+            snapshotSources = []
+            snapshotSourcesReadFailed = true
+            errorMessage = "账号同步设置未能读取，原文件已保留。"
+        }
         accounts = (try? read([AccountConfig].self, name: "accounts.json")) ?? []
         readings = (try? read([UUID: AccountReading].self, name: "readings.json")) ?? [:]
         readings = readings.filter { id, _ in accounts.contains { $0.id == id } }
@@ -599,6 +758,7 @@ final class AppStore: ObservableObject {
 
     func loadDemo() {
         revision += 1; isDemo = true
+        snapshotSources = []
         menuQuotaSelection = nil
         rememberedMenuMetrics = []
         let codex = AccountConfig(provider: .codex, name: "Personal", method: .localFile, location: "")

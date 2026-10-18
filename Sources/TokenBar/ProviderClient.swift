@@ -66,18 +66,32 @@ struct ProviderClient {
             // never creates a separately authenticated account.
             reading.identityKey = Self.identity(provider: "grok", accountID: "local-default-login")
             return reading
-        case (.snapshot, .snapshotFile):
-            let data = try Self.readFile(config.location)
-            return try Self.parseSnapshot(data, sourceAccountID: config.sourceAccountID, source: URL(fileURLWithPath: NSString(string: config.location).expandingTildeInPath).standardizedFileURL.resolvingSymlinksInPath().path, at: now())
-        case (.snapshot, .snapshotURL):
+        case (.snapshot, .snapshotFile), (.snapshot, .snapshotURL), (.snapshot, .snapshotSSH):
+            let (data, source) = try await snapshotDocument(config)
+            return try Self.parseSnapshot(data, sourceAccountID: config.sourceAccountID, source: source, at: now())
+        default: throw ProviderError.invalidConfiguration
+        }
+    }
+
+    func fetchCatalog(_ config: AccountConfig) async throws -> SnapshotCatalog {
+        guard config.provider == .snapshot else { throw ProviderError.invalidConfiguration }
+        let (data, source) = try await snapshotDocument(config)
+        return try SnapshotCatalog.parse(data, source: source, at: now())
+    }
+
+    private func snapshotDocument(_ config: AccountConfig) async throws -> (Data, String) {
+        switch config.method {
+        case .snapshotFile:
+            return (try Self.readFile(config.location), SnapshotSource.locationKey(config))
+        case .snapshotURL:
             var headers: [String: String] = [:]
             if let data = try? credentialReader(CredentialStore.serviceName, config.id.uuidString),
                let raw = String(data: data, encoding: .utf8), let token = Self.secret(raw) {
                 headers["Authorization"] = "Bearer \(token)"
             }
             let data = try await get(config.location, headers: headers)
-            return try Self.parseSnapshot(data, sourceAccountID: config.sourceAccountID, source: config.location, at: now())
-        case (.snapshot, .snapshotSSH):
+            return (data, config.location)
+        case .snapshotSSH:
             let arguments = try Self.buildSSHArguments(host: config.sshHost ?? "", path: config.location, useSudo: config.sshUseSudo == true)
             let source = "ssh:\(config.sshHost ?? ""):\(config.location)"
             let cacheKey = source + (config.sshUseSudo == true ? ":sudo" : ":user")
@@ -85,7 +99,7 @@ struct ProviderClient {
             let data = try await SnapshotSourceCache.shared.read(key: cacheKey) {
                 try await reader(arguments)
             }
-            return try Self.parseSnapshot(data, sourceAccountID: config.sourceAccountID, source: source, at: now())
+            return (data, source)
         default: throw ProviderError.invalidConfiguration
         }
     }

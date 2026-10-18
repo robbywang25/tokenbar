@@ -7,6 +7,7 @@ TokenBar 在你的 Mac 上读取你明确接入的 Agent 额度。应用不内�
 应用在 `~/Library/Application Support/TokenBar/` 保存账号配置与最近一次额度读数：
 
 - `accounts.json`：随机账号 UUID、为旧配置兼容保留的名称字段（不再用于展示）、服务商及可选显示名称、连接方式、你选择的路径或端点以及源账号 ID。SSH 连接还保存用户指定的主机别名和是否使用已有的无交互 sudo 读取权限。
+- `snapshot-sources.json`：明确订阅的来源连接、自动加入开关及已移除的源账号 ID；不含 Bearer。子账号只引用来源 UUID，共享一次读取结果。
 - `account-emails.json`：来源曾提供的邮箱、所选来源配置的哈希及可用的身份哈希，仅用于失败时的账号标签。它不会补出余额或让数据变新，切换来源/身份会清除原标签；不从个人姓名推测邮箱。
 - `readings.json`：额度窗口、剩余值、重置时间、状态、采集时间、来源时效、套餐名称，以及来源提供的账号显示名或邮箱（界面只使用邮箱）。身份去重只保留派生哈希，不把访问令牌作为身份键写入缓存。
 
@@ -42,9 +43,9 @@ SSH 数据源不需要额外安装本地 LaunchAgent 或常驻同步服务。应
 
 ## 移除与卸载
 
-在应用内点击“移除此账号”，可删除对应的 TokenBar 配置、读数和专用 Bearer。服务商原有凭据文件或钥匙串条目、SSH 配置与密钥、远程额度文件和采集器均保留。
+在应用内点击“移除此账号”，可删除对应的 TokenBar 配置、读数和单账号连接专用 Bearer。自动发现的账号会在来源中保存排除 ID，防止下次刷新重新加入；多个账号共享的来源 Bearer 继续保留，直到设置中“断开此来源”才删除并停止请求。服务商原有凭据文件或钥匙串条目、SSH 配置与密钥、远程额度文件和采集器均保留。
 
-完整卸载时，先在 TokenBar 中移除各账号并关闭“登录时启动”，退出应用，然后删除应用和 `~/Library/Application Support/TokenBar/`。如需同时移除显示偏好与提醒记录，可在退出后运行 `defaults delete wang.robby.tokenbar`。如果先删除了应用，可使用 macOS“钥匙串访问”移除 service 为 `wang.robby.tokenbar.credentials` 的遗留条目。不要误删服务商自己的登录条目。
+完整卸载时，先在 TokenBar 中断开订阅来源、移除各账号并关闭“登录时启动”，退出应用，然后删除应用和 `~/Library/Application Support/TokenBar/`。如需同时移除显示偏好与提醒记录，可在退出后运行 `defaults delete wang.robby.tokenbar`。如果先删除了应用，可使用 macOS“钥匙串访问”移除 service 为 `wang.robby.tokenbar.credentials` 的遗留条目。不要误删服务商自己的登录条目。
 
 本说明描述本仓库的行为。自行修改源码、接入自建服务或第三方分发版本时，应另外审查其行为。
 
