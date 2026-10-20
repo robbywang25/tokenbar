@@ -26,12 +26,12 @@ final class EmailIdentityTests: XCTestCase {
         XCTAssertEqual(store.readings[id]?.status, .needsAuth)
         XCTAssertEqual(store.accountIdentityLabel(environment.account), "person@example.com")
         XCTAssertTrue(store.accountIdentityHelp(environment.account).contains("上次识别"))
-        XCTAssertEqual(store.menuTitle, "—")
+        XCTAssertEqual(store.menuTitle, "~94%")
         XCTAssertTrue(store.availableMenuMetrics.allSatisfy { $0.accountName == "person@example.com" })
 
         let restored = environment.store()
         XCTAssertEqual(restored.accountIdentityLabel(environment.account), "person@example.com")
-        XCTAssertEqual(restored.menuTitle, "—")
+        XCTAssertEqual(restored.menuTitle, "~94%")
         restored.remove(environment.account)
         XCTAssertNil(restored.accountEmail(environment.account))
     }

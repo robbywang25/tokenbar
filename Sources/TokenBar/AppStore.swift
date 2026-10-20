@@ -12,7 +12,7 @@ final class AppStore: ObservableObject {
     @Published var isRefreshing = false
     @Published var errorMessage: String?
     @Published var lastRefresh: Date?
-    @Published var refreshSeconds: Double = 30
+    @Published var refreshSeconds: Double = 10
     @Published var launchAtLogin = false
     @Published var now = Date()
     @Published var isDemo = false
@@ -25,6 +25,7 @@ final class AppStore: ObservableObject {
     var onWidgetSnapshotChange: ((TokenBarWidgetSnapshot) -> Void)?
 
     private var rememberedAccountEmails: [UUID: RememberedAccountEmail] = [:]
+    private var menuReadingCache: [UUID: MenuReadingCache] = [:]
     private(set) var resetCalendarHistory = ResetCalendarHistory()
     private var persistedResetCalendarHistory = ResetCalendarHistory()
     private var resetCalendarHistoryReadFailed = false
@@ -56,7 +57,7 @@ final class AppStore: ObservableObject {
         loadExpiryPreferences()
         load()
         let saved = defaults.double(forKey: "refreshSeconds")
-        if [30.0, 60, 120].contains(saved) { refreshSeconds = saved }
+        if [10.0, 15, 30, 60, 120].contains(saved) { refreshSeconds = saved }
         launchAtLogin = SMAppService.mainApp.status == .enabled
         if startTimers {
             // Freshness boundaries are coarse. Per-second countdowns live in
@@ -211,12 +212,18 @@ final class AppStore: ObservableObject {
             let value = menuValue(metric)
             let detail: String
             if value == "—" { detail = "当前未知" }
-            else if metric.kind == .credits, let reading = readings[metric.accountID] {
+            else if metric.kind == .credits, let reading = menuReading(for: metric.accountID)?.reading {
                 if reading.unlimitedCredits { detail = "不限量" }
                 else if let credits = reading.credits { detail = Self.exactCredits(credits) + " 点" }
                 else { detail = "当前未知" }
             } else { detail = value }
-            return "\(metric.accountName) · \(metric.windowLabel)：\(detail)"
+            let history: String
+            if let display = menuReading(for: metric.accountID), display.historical,
+               let observed = display.reading.lastSuccessAt {
+                history = "（上次成功读取：" + observed.formatted(.dateTime.month().day().hour().minute().second()) + "；当前" +
+                    (readings[metric.accountID]?.displayStatus(at: now).title ?? "未更新") + "）"
+            } else { history = "" }
+            return "\(metric.accountName) · \(metric.windowLabel)：\(detail)\(history)"
         }.joined(separator: "\n")
     }
 
@@ -227,7 +234,7 @@ final class AppStore: ObservableObject {
     // Keep the complete label catalog and stored selection IDs, including
     // hidden metrics. Presentation filtering must not rewrite user choices.
     private var menuMetricCatalog: [MenuQuotaMetric] {
-        accounts.flatMap { account -> [MenuQuotaMetric] in
+        orderedAccounts.flatMap { account -> [MenuQuotaMetric] in
             let windows = readings[account.id]?.windows ?? []
             var current = windows.filter { $0.remainingPercent != nil }.map { window in
                 MenuQuotaMetric(accountID: account.id, windowID: window.id, accountName: accountIdentityLabel(account),
@@ -291,17 +298,62 @@ final class AppStore: ObservableObject {
         return availableMenuMetrics.filter { selected.contains($0.id) }
     }
 
+    /// Stable grouping: keep the first-seen service order and account order
+    /// inside each service, without rewriting IDs, stored choices or history.
+    var orderedAccounts: [AccountConfig] {
+        var groups: [[AccountConfig]] = []
+        var positions: [String: Int] = [:]
+        for account in accounts {
+            let key = account.menuAgentPrefix.lowercased()
+            if let index = positions[key] { groups[index].append(account) }
+            else { positions[key] = groups.count; groups.append([account]) }
+        }
+        return groups.flatMap { $0 }
+    }
+
+    private func menuReading(for id: UUID) -> (reading: AccountReading, historical: Bool)? {
+        guard let account = accounts.first(where: { $0.id == id && $0.enabled }) else { return nil }
+        let current = readings[id]
+        if let current, MenuReadingCache.blocksFallback(current) { return nil }
+        if let current, current.isFresh(at: now) { return (current, false) }
+        let cached = menuReadingCache[id].flatMap {
+            $0.matches(account, current: current) && MenuReadingCache.accepts($0.reading, at: now) ? $0.reading : nil
+        }
+        if let current, MenuReadingCache.accepts(current, at: now),
+           cached == nil || current.lastSuccessAt! >= cached!.lastSuccessAt! { return (current, true) }
+        if let cached, MenuReadingCache.accepts(cached, at: now) { return (cached, true) }
+        return nil
+    }
+
+    private func rememberMenuReadings() {
+        guard !isDemo else { return }
+        let previous = menuReadingCache
+        menuReadingCache = menuReadingCache.filter { id, cached in
+            accounts.contains { $0.id == id && cached.matches($0, current: readings[id]) }
+        }
+        for account in accounts {
+            guard let reading = readings[account.id], MenuReadingCache.accepts(reading, at: now) else { continue }
+            if let old = menuReadingCache[account.id]?.reading.lastSuccessAt, let observed = reading.lastSuccessAt, observed < old { continue }
+            menuReadingCache[account.id] = MenuReadingCache(account: account, reading: reading)
+        }
+        if previous != menuReadingCache {
+            do { try save(menuReadingCache, name: "menu-readings.json") }
+            catch { errorMessage = "菜单栏上次读数未能保存。" }
+        }
+    }
+
     private func menuValue(_ metric: MenuQuotaMetric) -> String {
-        guard accounts.contains(where: { $0.id == metric.accountID && $0.enabled }),
-              let reading = readings[metric.accountID], reading.isFresh(at: now) else { return "—" }
+        guard let display = menuReading(for: metric.accountID) else { return "—" }
+        let reading = display.reading
+        let prefix = display.historical ? "~" : ""
         if metric.kind == .credits {
-            if reading.unlimitedCredits { return "∞" }
+            if reading.unlimitedCredits { return prefix + "∞" }
             guard let credits = reading.credits, credits.isFinite, credits >= 0 else { return "—" }
-            return Self.compactCredits(credits)
+            return prefix + Self.compactCredits(credits)
         }
         guard let percent = reading.visibleWindows.first(where: { $0.id == metric.windowID })?.remainingPercent,
               percent.isFinite, (0...100).contains(percent) else { return "—" }
-        return "\(Int(percent.rounded()))%"
+        return prefix + "\(Int(percent.rounded()))%"
     }
 
     private static func exactCredits(_ value: Double) -> String {
@@ -345,6 +397,7 @@ final class AppStore: ObservableObject {
         // immediately, even while an earlier network refresh is still running.
         now = Date()
         guard !isRefreshing, !isDemo else { return }
+        rememberMenuReadings()
         rememberAccountEmails()
         rememberMenuChoices()
         isRefreshing = true
@@ -400,13 +453,13 @@ final class AppStore: ObservableObject {
                 let id = config.id
                 guard revision == currentRevision, var reading = results[id], accounts.contains(where: { $0.id == id }) else { continue }
                 if let identity = reading.identityKey, !identities.insert(identity).inserted {
-                    reading = AccountReading(status: .notConfigured, checkedAt: Date(), lastSuccessAt: nil, detail: ProviderError.duplicate.message)
+                    reading = AccountReading(status: .notConfigured, checkedAt: Date(), lastSuccessAt: nil, detail: ProviderError.duplicate.message, reason: "duplicate")
                 }
                 recordResetHistory(account: config, previous: baseline[id], next: reading)
                 readings[id] = reading
             }
         }
-        if revision == currentRevision { lastRefresh = Date(); rememberAccountEmails(); rememberMenuChoices(); persistReadings(); persistResetCalendarHistoryIfNeeded() }
+        if revision == currentRevision { lastRefresh = Date(); rememberMenuReadings(); rememberAccountEmails(); rememberMenuChoices(); persistReadings(); persistResetCalendarHistoryIfNeeded() }
         now = Date()
         isRefreshing = false
         if revision == currentRevision { publishWidgetSnapshot() }
@@ -547,6 +600,7 @@ final class AppStore: ObservableObject {
             now = Date()
             recordResetHistory(account: config, previous: nil, next: reading)
             readings[config.id] = reading
+            rememberMenuReadings()
             rememberAccountEmails()
             rememberMenuChoices()
             errorMessage = nil
@@ -587,6 +641,7 @@ final class AppStore: ObservableObject {
             if !isDemo { try save(updated, name: "accounts.json") }
             revision += 1
             accounts = updated; readings.removeValue(forKey: config.id)
+            rememberMenuReadings()
             rememberAccountEmails()
             rememberMenuChoices()
             if !isDemo {
@@ -601,7 +656,7 @@ final class AppStore: ObservableObject {
     }
 
     func updateRefreshInterval(_ seconds: Double) {
-        guard [30.0, 60, 120].contains(seconds) else { return }
+        guard [10.0, 15, 30, 60, 120].contains(seconds) else { return }
         refreshSeconds = seconds
         defaults.set(seconds, forKey: "refreshSeconds")
         schedulePoll()
@@ -643,6 +698,7 @@ final class AppStore: ObservableObject {
         accounts = (try? read([AccountConfig].self, name: "accounts.json")) ?? []
         readings = (try? read([UUID: AccountReading].self, name: "readings.json")) ?? [:]
         readings = readings.filter { id, _ in accounts.contains { $0.id == id } }
+        menuReadingCache = (try? read([UUID: MenuReadingCache].self, name: "menu-readings.json")) ?? [:]
         rememberedAccountEmails = (try? read([UUID: RememberedAccountEmail].self, name: "account-emails.json")) ?? [:]
         var invalidatedReading = false
         for account in accounts {
@@ -658,6 +714,7 @@ final class AppStore: ObservableObject {
             catch { errorMessage = "旧来源缓存未能清理，当前读数已隐藏。"; return }
         }
         rememberAccountEmails()
+        rememberMenuReadings()
         rememberMenuChoices(persist: false)
     }
 

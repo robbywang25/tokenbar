@@ -56,7 +56,7 @@ struct DashboardView: View {
                     } else if store.accounts.isEmpty {
                         emptyState
                     } else {
-                        ForEach(store.accounts) { account in
+                        ForEach(store.orderedAccounts) { account in
                             accountCard(account)
                         }
                     }
@@ -467,6 +467,8 @@ struct DashboardView: View {
                 Text("自动刷新")
                 Spacer()
                 Picker("自动刷新间隔", selection: Binding(get: { store.refreshSeconds }, set: { store.updateRefreshInterval($0) })) {
+                    Text("10 秒").tag(10.0)
+                    Text("15 秒").tag(15.0)
                     Text("30 秒").tag(30.0)
                     Text("60 秒").tag(60.0)
                     Text("120 秒").tag(120.0)
@@ -537,7 +539,7 @@ struct DashboardView: View {
                 Text("暂无可显示的额度")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                ForEach(store.accounts) { account in
+                ForEach(store.orderedAccounts) { account in
                     let metrics = store.availableMenuMetrics.filter { $0.accountID == account.id }
                     if !metrics.isEmpty {
                         VStack(alignment: .leading, spacing: 7) {

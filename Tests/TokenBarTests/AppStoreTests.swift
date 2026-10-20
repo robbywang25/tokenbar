@@ -40,7 +40,7 @@ final class AppStoreTests: XCTestCase {
         restored.setShowsAgentPrefix(true)
         XCTAssertTrue(AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults).showsAgentPrefix)
         restored.now = Date().addingTimeInterval(121)
-        XCTAssertEqual(restored.menuTitle, "Codex — · — · Codex — · Grok —")
+        XCTAssertEqual(restored.menuTitle, "Codex ~63% · ~25.8k · Codex ~12% · Grok ~98%")
         for metric in restored.availableMenuMetrics { restored.setMenuMetric(metric, enabled: false) }
         XCTAssertEqual(restored.menuTitle, "—")
     }
@@ -194,8 +194,8 @@ final class AppStoreTests: XCTestCase {
         XCTAssertEqual(restored.menuTitle, "37% · ∞")
         XCTAssertTrue(restored.menuTooltip.contains("剩余点数：不限量"))
         restored.now = Date().addingTimeInterval(121)
-        XCTAssertEqual(restored.menuTitle, "— · —")
-        XCTAssertTrue(restored.menuTooltip.contains("剩余点数：当前未知"))
+        XCTAssertEqual(restored.menuTitle, "~37% · ~∞")
+        XCTAssertTrue(restored.menuTooltip.contains("上次成功读取"))
         restored.remove(account)
         XCTAssertEqual(restored.menuQuotaSelection, [])
         XCTAssertTrue(restored.availableMenuMetrics.isEmpty)
@@ -219,13 +219,13 @@ final class AppStoreTests: XCTestCase {
         XCTAssertEqual(store.menuTitle, "0")
         try Data("invalid JSON fixture".utf8).write(to: URL(fileURLWithPath: account.location))
         await store.refresh()
-        XCTAssertEqual(store.menuTitle, "—")
+        XCTAssertEqual(store.menuTitle, "~0")
         XCTAssertTrue(store.menuMetricSelected(metric))
         XCTAssertEqual(store.availableMenuMetrics, [metric])
         let restored = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
         XCTAssertTrue(restored.menuMetricSelected(metric))
         XCTAssertEqual(restored.availableMenuMetrics, [metric])
-        XCTAssertEqual(restored.menuTitle, "—")
+        XCTAssertEqual(restored.menuTitle, "~0")
     }
 
     @MainActor
@@ -296,13 +296,13 @@ final class AppStoreTests: XCTestCase {
         let selected = try XCTUnwrap(restored.menuQuotaSelection)
         try Data("invalid fixture".utf8).write(to: URL(fileURLWithPath: account.location))
         await restored.refresh()
-        XCTAssertEqual(restored.menuTitle, "— · —")
+        XCTAssertEqual(restored.menuTitle, "~42% · ~123.5")
         XCTAssertFalse(restored.menuTooltip.contains("Reserve"))
         XCTAssertEqual(restored.menuQuotaSelection, selected)
         let afterFailure = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
         XCTAssertEqual(afterFailure.accounts.map(\.id), [account.id])
         XCTAssertEqual(afterFailure.menuQuotaSelection, selected)
-        XCTAssertEqual(afterFailure.menuTitle, "— · —")
+        XCTAssertEqual(afterFailure.menuTitle, "~42% · ~123.5")
         XCTAssertFalse(afterFailure.availableMenuMetrics.contains { $0.group == "reserve" })
         XCTAssertTrue(afterFailure.rememberedMenuMetrics.contains { $0.id == reserveID && $0.group == "reserve" })
         XCTAssertEqual(Set(fixture.defaults.stringArray(forKey: "menuQuotaSelection.v1") ?? []), selected)
@@ -378,7 +378,7 @@ final class AppStoreTests: XCTestCase {
         XCTAssertTrue(store.menuTooltip.contains("56000 点"))
         XCTAssertEqual(store.readings[account.id]?.windows.count, 2)
         store.readings[account.id]?.status = .stale
-        XCTAssertEqual(store.menuTitle, "— · —")
+        XCTAssertEqual(store.menuTitle, "~42% · ~56k")
     }
 
     @MainActor
@@ -415,16 +415,16 @@ final class AppStoreTests: XCTestCase {
         let choices = store.availableMenuMetrics
         XCTAssertEqual(store.menuTitle, "37%")
         store.now = Date().addingTimeInterval(121)
-        XCTAssertEqual(store.menuTitle, "—")
-        XCTAssertTrue(store.menuTooltip.contains("当前未知"))
+        XCTAssertEqual(store.menuTitle, "~37%")
+        XCTAssertTrue(store.menuTooltip.contains("上次成功读取"))
         try Data("invalid JSON fixture".utf8).write(to: URL(fileURLWithPath: account.location))
         await store.refresh()
-        XCTAssertEqual(store.menuTitle, "—")
+        XCTAssertEqual(store.menuTitle, "~37%")
         XCTAssertEqual(store.availableMenuMetrics, choices)
         XCTAssertTrue(store.menuQuotaSelected(accountID: account.id, windowID: "weekly"))
         let restored = AppStore(directory: fixture.state, startTimers: false, defaults: fixture.defaults)
         XCTAssertEqual(restored.availableMenuMetrics, choices)
-        XCTAssertEqual(restored.menuTitle, "—")
+        XCTAssertEqual(restored.menuTitle, "~37%")
         restored.remove(account)
         XCTAssertTrue(restored.availableMenuMetrics.isEmpty)
         XCTAssertEqual(restored.menuQuotaSelection, [])
@@ -612,7 +612,7 @@ final class AppStoreTests: XCTestCase {
         await fulfillment(of: [requestStarted], timeout: 5)
         XCTAssertGreaterThan(store.now, old.addingTimeInterval(590))
         XCTAssertEqual(store.readings[config.id]?.displayStatus(at: store.now), .stale)
-        XCTAssertEqual(store.menuTitle, "—")
+        XCTAssertEqual(store.menuTitle, "~70%")
         store.now = old
         await store.refresh()
         XCTAssertGreaterThan(store.now, old.addingTimeInterval(590))
