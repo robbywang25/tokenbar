@@ -26,6 +26,8 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate
     private var workspaceObservation: AnyCancellable?
     private let expiryNotice = ExpiryNoticeController()
     private let widgetPublisher = WidgetSnapshotPublisher()
+    private var focusLossObservation: AnyCancellable?
+    private var closingFromStatusItem = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -46,6 +48,8 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate
         popover.contentViewController = NSHostingController(rootView: GodDashboardRoot(cloud: cloud) { [weak self] size in
             self?.popover.contentSize = size
         })
+        focusLossObservation = Publishers.CombineLatest(cloud.authentication.$isSigningIn, cloud.authentication.$userCode)
+            .sink { [weak self] _, _ in self?.applyMenuPanelFocusLossBehavior() }
         workspaceObservation = cloud.$store.receive(on: RunLoop.main).sink { [weak self] store in
             self?.observeStore(store)
         }
@@ -76,10 +80,14 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate
 
     @objc private func togglePopover() {
         guard let button = statusItem.button else { return }
-        if popover.isShown { popover.performClose(nil) }
-        else {
+        if popover.isShown {
+            closingFromStatusItem = true
+            popover.performClose(nil)
+            closingFromStatusItem = false
+        } else {
             expiryNotice.dismissImmediately()
             NSApp.activate(ignoringOtherApps: true)
+            applyMenuPanelFocusLossBehavior()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             if let window = popover.contentViewController?.view.window {
                 window.makeKey()
@@ -100,7 +108,18 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate
         else { NSApp.activate(ignoringOtherApps: true) }
     }
 
+    func popoverShouldClose(_ popover: NSPopover) -> Bool {
+        if closingFromStatusItem { return true }
+        let dismisses = menuPanelDismissesOnFocusLoss(cloud.authentication)
+        if !dismisses { self.popover.behavior = .applicationDefined }
+        return dismisses
+    }
+
     func popoverDidClose(_ notification: Notification) { showExpiryNoticeIfNeeded() }
+
+    private func applyMenuPanelFocusLossBehavior() {
+        popover.behavior = menuPanelDismissesOnFocusLoss(cloud.authentication) ? .transient : .applicationDefined
+    }
 
     private func showExpiryNoticeIfNeeded() {
         guard !popover.isShown, !expiryNotice.isVisible,
@@ -115,4 +134,15 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate
         if !popover.isShown { togglePopover() }
         return false
     }
+}
+
+/// Focus loss may dismiss the menu panel except while a device-authorization
+/// confirmation code is still pending. The popover path calls this both when
+/// AppKit asks to close and when it chooses transient behavior. Idle panels
+/// stay transient. A pending code keeps the same surface, including copy and
+/// the action that opens the verification page again.
+@MainActor
+func menuPanelDismissesOnFocusLoss(_ authentication: GodAuthentication) -> Bool {
+    guard authentication.isSigningIn, let code = authentication.userCode, !code.isEmpty else { return true }
+    return false
 }

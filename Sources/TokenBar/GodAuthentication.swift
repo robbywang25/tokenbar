@@ -95,6 +95,9 @@ final class GodAuthentication: ObservableObject {
     private var loginTask: Task<Void, Never>?
     private var refreshTask: Task<GodToken, Error>?
     private var generation = 0
+    /// Production opens the verification page in the preferred browser. Tests
+    /// replace this so a synthetic grant never launches a browser.
+    var openVerificationPage: (URL, String?) -> Void = GodAuthentication.openInWorkspace
     static let keychainService = "wang.robby.tokenbar.god-session"
 
     init(directory: URL, http: GodHTTP = GodHTTP(), storage: GodSessionStorage = .live) {
@@ -200,8 +203,12 @@ final class GodAuthentication: ObservableObject {
 
     func openVerification() {
         guard let url = verificationURL else { return }
-        if let browser = connection?.preferredBrowserBundleID,
-           let application = NSWorkspace.shared.urlForApplication(withBundleIdentifier: browser) {
+        openVerificationPage(url, connection?.preferredBrowserBundleID)
+    }
+
+    static func openInWorkspace(_ url: URL, _ browserBundleID: String?) {
+        if let browserBundleID,
+           let application = NSWorkspace.shared.urlForApplication(withBundleIdentifier: browserBundleID) {
             NSWorkspace.shared.open([url], withApplicationAt: application, configuration: NSWorkspace.OpenConfiguration())
         } else { NSWorkspace.shared.open(url) }
     }

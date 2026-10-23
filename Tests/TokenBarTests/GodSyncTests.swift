@@ -158,6 +158,82 @@ final class GodSyncTests: XCTestCase {
         XCTAssertNil(cloud.syncMessage)
     }
 
+    @MainActor
+    func testMenuPanelKeepsPendingGodConfirmationCodeWhenFocusLeaves() async throws {
+        let flow = DeviceAuthorizationFlow()
+        SyncURLProtocol.handler = { flow.respond($0) }
+        let fixture = try SyncFixture()
+        defer { fixture.remove(); SyncURLProtocol.handler = nil }
+        let auth = fixture.auth()
+        let opened = OpenedVerificationPages()
+        auth.openVerificationPage = { url, _ in opened.urls.append(url) }
+        let page = URL(string: "https://identity.example.test/consent/openid/device-authorization?user_code=TEST-CODE")!
+
+        XCTAssertTrue(menuPanelDismissesOnFocusLoss(auth))
+        XCTAssertFalse(auth.isSigningIn)
+        XCTAssertNil(auth.userCode)
+        XCTAssertNil(auth.verificationURL)
+        XCTAssertNil(auth.user)
+
+        flow.setPhase(.pending)
+        auth.signIn()
+        await waitUntil("synthetic grant exposes the confirmation code") { auth.userCode == "TEST-CODE" }
+        XCTAssertFalse(menuPanelDismissesOnFocusLoss(auth))
+        XCTAssertTrue(auth.isSigningIn)
+        XCTAssertEqual(auth.userCode, "TEST-CODE")
+        XCTAssertEqual(auth.verificationURL, page)
+        XCTAssertEqual(opened.urls.last, page)
+        auth.openVerification()
+        XCTAssertEqual(opened.urls.last, auth.verificationURL)
+        auth.cancelSignIn()
+        XCTAssertFalse(auth.isSigningIn)
+        XCTAssertNil(auth.userCode)
+        XCTAssertNil(auth.verificationURL)
+        XCTAssertTrue(menuPanelDismissesOnFocusLoss(auth))
+        await Task.yield()
+        XCTAssertNil(auth.userCode, "a cancelled attempt must not publish the code again")
+        XCTAssertFalse(auth.isSigningIn)
+
+        flow.setPhase(.expired)
+        auth.signIn()
+        await waitUntil("code is visible before expiry") { auth.userCode == "TEST-CODE" }
+        XCTAssertFalse(menuPanelDismissesOnFocusLoss(auth))
+        XCTAssertEqual(auth.verificationURL, page)
+        await waitUntil("expiry clears the pending sign-in", timeout: 12) { auth.isSigningIn == false && auth.userCode == nil }
+        XCTAssertNil(auth.verificationURL)
+        XCTAssertNil(auth.user)
+        XCTAssertEqual(auth.message, GodError.expired.localizedDescription)
+        XCTAssertTrue(menuPanelDismissesOnFocusLoss(auth))
+
+        auth.message = nil
+        flow.setPhase(.finished)
+        auth.signIn()
+        await waitUntil("code is visible before the grant finishes") { auth.userCode == "TEST-CODE" }
+        XCTAssertFalse(menuPanelDismissesOnFocusLoss(auth))
+        XCTAssertEqual(auth.verificationURL, page)
+        await waitUntil("a finished grant clears the confirmation code", timeout: 12) { auth.isSigningIn == false && auth.userCode == nil && auth.user != nil }
+        XCTAssertNil(auth.verificationURL)
+        XCTAssertEqual(auth.user?.id, SyncFixture.ownerID)
+        XCTAssertNil(auth.message)
+        XCTAssertTrue(menuPanelDismissesOnFocusLoss(auth))
+        XCTAssertEqual(flow.deviceGrants, 3)
+        XCTAssertFalse(opened.urls.isEmpty)
+        XCTAssertTrue(opened.urls.allSatisfy { $0.host == "identity.example.test" })
+        XCTAssertTrue(flow.hosts.allSatisfy { $0 == "workbench.example.test" || $0 == "identity.example.test" })
+    }
+
+    @MainActor
+    private func waitUntil(_ label: String, timeout: TimeInterval = 12, _ ready: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !ready() {
+            if Date() >= deadline {
+                XCTFail(label)
+                return
+            }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
+
     private func preference(_ name: String, _ value: SyncJSON) -> SyncJSON { .object(["kind": .string("preference"), "name": .string(name), "value": value]) }
 }
 
@@ -247,6 +323,51 @@ private extension Data {
         while stream.hasBytesAvailable { let count = stream.read(&bytes, maxLength: bytes.count); if count <= 0 { break }; append(bytes, count: count) }
     }
 }
+private final class OpenedVerificationPages: @unchecked Sendable {
+    var urls: [URL] = []
+}
+
+private final class DeviceAuthorizationFlow: @unchecked Sendable {
+    enum Phase { case pending, expired, finished }
+    private let lock = NSLock()
+    private var phase = Phase.pending
+    private var requestedHosts: [String] = []
+    private var grants = 0
+    func setPhase(_ phase: Phase) { lock.lock(); self.phase = phase; lock.unlock() }
+    var deviceGrants: Int { lock.lock(); defer { lock.unlock() }; return grants }
+    var hosts: [String] { lock.lock(); defer { lock.unlock() }; return requestedHosts }
+    func respond(_ request: URLRequest) -> (Int, Data) {
+        lock.lock(); defer { lock.unlock() }
+        if let host = request.url?.host { requestedHosts.append(host) }
+        func json(_ value: Any) -> Data { try! JSONSerialization.data(withJSONObject: value) }
+        let issuer = SyncFixture.configuration.issuer
+        switch request.url?.path {
+        case "/api/tokenbar/v1/configuration":
+            return (200, try! JSONEncoder().encode(SyncFixture.configuration))
+        case "/.well-known/openid-configuration":
+            return (200, json(["issuer": issuer, "device_authorization_endpoint": issuer + "/api/oidc/device-authorization", "token_endpoint": issuer + "/api/oidc/token", "revocation_endpoint": issuer + "/api/oidc/revocation",
+                               "grant_types_supported": ["urn:ietf:params:oauth:grant-type:device_code"], "token_endpoint_auth_methods_supported": ["none"]]))
+        case "/api/oidc/device-authorization":
+            grants += 1
+            return (200, json(["device_code": "synthetic-device-secret", "user_code": "TEST-CODE",
+                               "verification_uri": issuer + "/consent/openid/device-authorization",
+                               "verification_uri_complete": issuer + "/consent/openid/device-authorization?user_code=TEST-CODE",
+                               "expires_in": phase == .expired ? 1 : 600, "interval": 5]))
+        case "/api/oidc/token":
+            if phase == .finished {
+                return (200, json(["access_token": "synthetic-access-token-value", "refresh_token": "synthetic-refresh-token-value", "token_type": "Bearer", "expires_in": 300, "scope": SyncFixture.configuration.scopes.joined(separator: " ")]))
+            }
+            return (400, json(["error": "authorization_pending"]))
+        case "/api/tokenbar/v1/session":
+            return (200, json(["schemaVersion": 1, "user": ["id": SyncFixture.ownerID, "label": "Fixture user", "quotaAccess": true]]))
+        case "/api/oidc/revocation":
+            return (200, Data("{}".utf8))
+        default:
+            return (404, json(["error": "not_found"]))
+        }
+    }
+}
+
 private final class SyncURLProtocol: URLProtocol {
     static var handler: ((URLRequest) -> (Int, Data))?
     override class func canInit(with request: URLRequest) -> Bool { true }
