@@ -16,6 +16,7 @@ final class AppStore: ObservableObject {
     @Published var launchAtLogin = false
     @Published var now = Date()
     @Published var isDemo = false
+    @Published private(set) var calendarTimeZoneID = "local"
     // nil preserves the initial one-metric default; [] is an explicit opt-out.
     @Published private(set) var menuQuotaSelection: Set<String>?
     @Published private(set) var rememberedMenuMetrics: [MenuQuotaMetric] = []
@@ -23,6 +24,12 @@ final class AppStore: ObservableObject {
     @Published private(set) var showsAgentPrefix = true
     // Installed by the application delegate, never by isolated data tests.
     var onWidgetSnapshotChange: ((TokenBarWidgetSnapshot) -> Void)?
+    var beforeRefresh: (() async -> Void)?
+    var onSavedStateChange: (() -> Void)?
+    var godSourceID: UUID?
+    var syncedSourceID: UUID?
+    var storageDirectory: URL { directory }
+    var preferences: UserDefaults { defaults }
 
     private var rememberedAccountEmails: [UUID: RememberedAccountEmail] = [:]
     private var menuReadingCache: [UUID: MenuReadingCache] = [:]
@@ -140,13 +147,17 @@ final class AppStore: ObservableObject {
     }
 
     func setShowsAgentPrefix(_ enabled: Bool) {
+        guard showsAgentPrefix != enabled else { return }
         showsAgentPrefix = enabled
         if !isDemo { defaults.set(enabled, forKey: Self.agentPrefixKey) }
+        if !isDemo { onSavedStateChange?() }
     }
 
     func setExpiryAlertsEnabled(_ enabled: Bool) {
+        guard expiryAlertsEnabled != enabled else { return }
         expiryAlertsEnabled = enabled
         if !isDemo { defaults.set(enabled, forKey: Self.expiryEnabledKey) }
+        if !isDemo { onSavedStateChange?() }
     }
 
     /// The delegate calls this only when it can show a notice and the popover is
@@ -402,6 +413,8 @@ final class AppStore: ObservableObject {
         rememberMenuChoices()
         isRefreshing = true
         let currentRevision = revision
+        await beforeRefresh?()
+        guard revision == currentRevision else { isRefreshing = false; return }
         let provider = client
         var catalogs: [UUID: SnapshotCatalog] = [:]
         var sourceErrors: [UUID: ProviderError] = [:]
@@ -494,6 +507,7 @@ final class AppStore: ObservableObject {
             try save(updated, name: "snapshot-sources.json")
             snapshotSources = updated
             revision += 1
+            onSavedStateChange?()
             await refresh()
         } catch {
             if savedSecret { CredentialStore.delete(account: config.id.uuidString) }
@@ -504,12 +518,14 @@ final class AppStore: ObservableObject {
     func setAccountDiscovery(_ id: UUID, enabled: Bool) {
         guard !isDemo, !snapshotSourcesReadFailed,
               let index = snapshotSources.firstIndex(where: { $0.id == id }) else { return }
+        guard snapshotSources[index].discoversAccounts != enabled else { return }
         var updated = snapshotSources
         updated[index].discoversAccounts = enabled
         do {
             try save(updated, name: "snapshot-sources.json")
             snapshotSources = updated
             revision += 1
+            onSavedStateChange?()
         } catch { errorMessage = "账号同步设置未能保存。" }
     }
 
@@ -656,10 +672,17 @@ final class AppStore: ObservableObject {
     }
 
     func updateRefreshInterval(_ seconds: Double) {
-        guard [10.0, 15, 30, 60, 120].contains(seconds) else { return }
+        guard [10.0, 15, 30, 60, 120].contains(seconds), refreshSeconds != seconds else { return }
         refreshSeconds = seconds
         defaults.set(seconds, forKey: "refreshSeconds")
         schedulePoll()
+        if !isDemo { onSavedStateChange?() }
+    }
+
+    func setCalendarTimeZone(_ identifier: String) {
+        guard identifier != calendarTimeZoneID, identifier == "local" || TimeZone(identifier: identifier) != nil else { return }
+        calendarTimeZoneID = identifier
+        if !isDemo { defaults.set(identifier, forKey: "resetCalendarTimeZone.v1"); onSavedStateChange?() }
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
@@ -682,6 +705,7 @@ final class AppStore: ObservableObject {
 
     private func load() {
         defer { publishWidgetSnapshot() }
+        calendarTimeZoneID = defaults.string(forKey: "resetCalendarTimeZone.v1") ?? "local"
         snapshotSourcesReadFailed = false
         do {
             snapshotSources = try read([SnapshotSource].self, name: "snapshot-sources.json")
@@ -785,7 +809,7 @@ final class AppStore: ObservableObject {
         return try JSONDecoder().decode(type, from: Data(contentsOf: url))
     }
 
-    private func save<T: Encodable>(_ value: T, name: String) throws {
+    func save<T: Encodable>(_ value: T, name: String) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
         let data = try JSONEncoder().encode(value)
@@ -809,8 +833,143 @@ final class AppStore: ObservableObject {
     }
 
     func publishWidgetSnapshot() {
+        if !isDemo { onSavedStateChange?() }
         guard let publish = onWidgetSnapshotChange, let snapshot = widgetSnapshot() else { return }
         publish(snapshot)
+    }
+
+    func stop() {
+        revision += 1
+        poll?.invalidate(); poll = nil; clock?.invalidate(); clock = nil
+        if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
+        wakeObserver = nil; onSavedStateChange = nil; onWidgetSnapshotChange = nil; beforeRefresh = nil
+    }
+
+    func cloudKey(_ account: AccountConfig) -> String {
+        if let key = account.cloudAccountID { return key }
+        if account.snapshotSourceID == godSourceID, godSourceID != nil { return "god:" + account.sourceAccountID }
+        if account.snapshotSourceID == syncedSourceID, syncedSourceID != nil { return account.sourceAccountID }
+        return "local:" + account.id.uuidString.lowercased()
+    }
+
+    func exportCloudRecords() throws -> [String: SyncJSON] {
+        var records: [String: SyncJSON] = [:]
+        for account in accounts {
+            let key = cloudKey(account)
+            var reading = readings[account.id]
+            if reading?.hasVisibleQuota != true, let saved = menuReadingCache[account.id], saved.matches(account, current: reading) {
+                reading = saved.reading; reading?.status = .stale
+            }
+            records["a:" + key] = try GodSyncProjection.record(account: account, key: key, reading: reading)
+            // Future schedules already travel in the latest reading. Unioning
+            // them as history could revive a subsequently corrected deadline.
+            let history = resetCalendarHistory.records(for: account, reading: readings[account.id]).filter { $0.resetsAt <= now }
+            if !history.isEmpty {
+                var value: [String: SyncJSON] = ["kind": .string("history"), "accountID": .string(key), "events": try SyncJSON.encode(history)]
+                if let epoch = GodSyncProjection.epoch(reading) { value["epoch"] = .string(epoch) }
+                if let email = accountEmail(account) { value["emailDigest"] = .string(GodAuthentication.digest(email.lowercased())) }
+                records["h:" + key] = .object(value)
+            }
+        }
+        func preference(_ name: String, _ value: SyncJSON) { records["p:" + name] = .object(["kind": .string("preference"), "name": .string(name), "value": value]) }
+        func setting(_ name: String, _ value: SyncJSON) { records["s:" + name] = .object(["kind": .string("switch"), "name": .string(name), "value": value]) }
+        preference("refreshSeconds", .number(refreshSeconds)); preference("calendarTimeZone", .string(calendarTimeZoneID))
+        setting("showsAgentPrefix", .bool(showsAgentPrefix)); setting("expiryAlertsEnabled", .bool(expiryAlertsEnabled))
+        setting("menuQuotaSelection", .array(menuMetricCatalog.filter { effectiveMenuSelection.contains($0.id) }.compactMap { metric in
+            guard let account = accounts.first(where: { $0.id == metric.accountID }) else { return nil }
+            var value: [String: SyncJSON] = ["accountID": .string(cloudKey(account)), "windowID": .string(metric.windowID)]
+            if metric.kind == .credits { value["kind"] = .string("credits") }
+            return .object(value)
+        }))
+        setting("enabledAccounts", .object(Dictionary(accounts.map { (cloudKey($0), SyncJSON.bool($0.enabled)) }, uniquingKeysWith: { _, last in last })))
+        let excluded = snapshotSources.flatMap { source -> [String] in
+            if source.id == godSourceID { return source.excludedAccountIDs.map { "god:" + $0 } }
+            if source.id == syncedSourceID { return Array(source.excludedAccountIDs) }
+            return []
+        }
+        setting("excludedAccountIDs", .array(excluded.sorted().map(SyncJSON.string)))
+        if let source = snapshotSources.first(where: { $0.id == godSourceID }) { setting("autoDiscoverGodAccounts", .bool(source.discoversAccounts)) }
+        return records
+    }
+
+    func applyCloudRecords(_ records: [String: SyncJSON], switches: Bool) throws {
+        if let value = records["p:refreshSeconds"]?["value"]?.number { updateRefreshInterval(value) }
+        if let value = records["p:calendarTimeZone"]?["value"]?.string { setCalendarTimeZone(value) }
+        for account in accounts {
+            let key = cloudKey(account)
+            guard let value = records["h:" + key], value["kind"] == .string("history"),
+                  let events = value["events"], let incoming = try? events.decode([QuotaResetRecord].self) else { continue }
+            let current = readings[account.id]
+            let metadataReading = records["a:" + key]?["reading"].flatMap { try? GodSyncProjection.decodeReading($0) }
+            let reference = account.snapshotSourceID == syncedSourceID ? metadataReading : current
+            if let old = value["epoch"]?.string, let active = GodSyncProjection.epoch(reference), old != active { continue }
+            if let old = value["emailDigest"]?.string, let email = AccountEmail.validated(reference?.email), old != GodAuthentication.digest(email.lowercased()) { continue }
+            resetCalendarHistory.mergeSynced(incoming, account: account, reading: current, at: now)
+        }
+        persistResetCalendarHistoryIfNeeded()
+        guard switches else { publishWidgetSnapshot(); return }
+        if let value = records["s:showsAgentPrefix"]?["value"]?.bool { setShowsAgentPrefix(value) }
+        if let value = records["s:expiryAlertsEnabled"]?["value"]?.bool { setExpiryAlertsEnabled(value) }
+        if let values = records["s:enabledAccounts"]?["value"]?.object {
+            for index in accounts.indices { if let enabled = values[cloudKey(accounts[index])]?.bool { accounts[index].enabled = enabled } }
+            try save(accounts, name: "accounts.json")
+        }
+        if let values = records["s:excludedAccountIDs"]?["value"]?.array {
+            let ids = Set(values.compactMap(\.string))
+            for index in snapshotSources.indices {
+                if snapshotSources[index].id == godSourceID { snapshotSources[index].excludedAccountIDs = Set(ids.filter { $0.hasPrefix("god:") }.map { String($0.dropFirst(4)) }) }
+                if snapshotSources[index].id == syncedSourceID { snapshotSources[index].excludedAccountIDs = ids }
+            }
+            try save(snapshotSources, name: "snapshot-sources.json")
+            for account in accounts where ids.contains(cloudKey(account)) { remove(account) }
+        }
+        if let value = records["s:autoDiscoverGodAccounts"]?["value"]?.bool, let godSourceID { setAccountDiscovery(godSourceID, enabled: value) }
+        if let choices = records["s:menuQuotaSelection"]?["value"]?.array {
+            let byKey = Dictionary(accounts.map { (cloudKey($0), $0.id) }, uniquingKeysWith: { first, _ in first })
+            menuQuotaSelection = Set(choices.compactMap { choice -> String? in
+                guard let key = choice["accountID"]?.string, let id = byKey[key], let window = choice["windowID"]?.string else { return nil }
+                return choice["kind"] == .string("credits") ? id.uuidString + "#credits" : MenuQuotaMetric.selectionID(accountID: id, windowID: window)
+            })
+            rememberMenuChoices()
+        }
+        publishWidgetSnapshot()
+    }
+
+    func promoteSyncedGodAccounts(_ known: Set<String>, source: AccountConfig) throws {
+        var changed = false
+        for index in accounts.indices {
+            let account = accounts[index], key = cloudKey(account)
+            guard account.snapshotSourceID == syncedSourceID, key.hasPrefix("god:"), known.contains(key) else { continue }
+            accounts[index].location = source.location
+            accounts[index].sourceAccountID = String(key.dropFirst(4))
+            accounts[index].snapshotSourceID = godSourceID
+            accounts[index].cloudAccountID = key
+            changed = true
+        }
+        if changed { try save(accounts, name: "accounts.json") }
+    }
+
+    func importCloudSnapshot(_ data: Data, sourceID: UUID) throws {
+        guard let source = snapshotSources.first(where: { $0.id == sourceID }) else { throw GodError.invalidResponse }
+        let catalog = try SnapshotCatalog.parse(data, source: SnapshotSource.locationKey(source.connection), at: Date())
+        let owned = accounts.filter { $0.snapshotSourceID == sourceID }
+        let existing = Set(owned.map(\.sourceAccountID))
+        let added = catalog.entries.filter { source.discoversAccounts && $0.shouldDiscover && !source.excludedAccountIDs.contains($0.id) }.map(\.id)
+        let removed = owned.contains { source.excludedAccountIDs.contains($0.sourceAccountID) }
+        if !removed, Set(added).isSubset(of: existing), owned.allSatisfy({ account in
+            catalog.entries.first(where: { $0.id == account.sourceAccountID }).map { readings[account.id] == $0.reading } ?? true
+        }) { return }
+        revision += 1
+        reconcileSnapshotAccounts([sourceID: catalog])
+        let entries = Dictionary(catalog.entries.map { ($0.id, $0.reading) }, uniquingKeysWith: { _, last in last })
+        for account in accounts where account.snapshotSourceID == sourceID {
+            if let reading = entries[account.sourceAccountID] {
+                recordResetHistory(account: account, previous: readings[account.id], next: reading)
+                readings[account.id] = reading
+            }
+        }
+        rememberAccountEmails(); rememberMenuReadings(); rememberMenuChoices()
+        persistReadings(); persistResetCalendarHistoryIfNeeded(); publishWidgetSnapshot()
     }
 
     func loadDemo() {

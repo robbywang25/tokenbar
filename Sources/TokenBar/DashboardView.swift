@@ -14,6 +14,7 @@ enum DashboardSection: String {
 
 struct DashboardView: View {
     @ObservedObject var store: AppStore
+    var cloud: GodWorkspace?
     var onPanelSizeChange: (CGSize) -> Void
     @State private var showingConnection = false
     @State private var showingSettings = false
@@ -21,9 +22,10 @@ struct DashboardView: View {
     @State private var selectedTab: DashboardSection
     @State private var calendarDate = Date()
 
-    init(store: AppStore, initialSection: DashboardSection = .accounts,
+    init(store: AppStore, cloud: GodWorkspace? = nil, initialSection: DashboardSection = .accounts,
          onPanelSizeChange: @escaping (CGSize) -> Void = { _ in }) {
         self.store = store
+        self.cloud = cloud
         self._selectedTab = State(initialValue: initialSection)
         self.onPanelSizeChange = onPanelSizeChange
     }
@@ -461,6 +463,7 @@ struct DashboardView: View {
                     .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
                     .accessibilityLabel("关闭设置")
             }
+            if let cloud, !store.isDemo { GodAccountView(cloud: cloud); Divider() }
             Toggle("登录时启动", isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }))
                 .toggleStyle(.switch).controlSize(.small)
             HStack {

@@ -34,6 +34,7 @@ struct AccountConfig: Codable, Identifiable, Equatable {
     // The connection (including an optional Bearer) belongs to the source,
     // while each discovered account retains its own stable UI/cache identity.
     var snapshotSourceID: UUID? = nil
+    var cloudAccountID: String? = nil
     var displayService: String { serviceLabel ?? provider.title }
 
     var menuAgentPrefix: String {

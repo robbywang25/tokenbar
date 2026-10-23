@@ -20,14 +20,14 @@ enum TokenBarMain {
 final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
-    private let store = AppStore()
+    private let cloud = GodWorkspace()
+    private var store: AppStore { cloud.store }
     private var observation: AnyCancellable?
+    private var workspaceObservation: AnyCancellable?
     private let expiryNotice = ExpiryNoticeController()
     private let widgetPublisher = WidgetSnapshotPublisher()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        store.onWidgetSnapshotChange = { [weak self] snapshot in self?.widgetPublisher.submit(snapshot) }
-        store.publishWidgetSnapshot()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.image = nil
@@ -43,9 +43,26 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate
         popover.delegate = self
         popover.animates = true
         popover.contentSize = NSSize(width: 440, height: 620)
-        popover.contentViewController = NSHostingController(rootView: DashboardView(store: store) { [weak self] size in
+        popover.contentViewController = NSHostingController(rootView: GodDashboardRoot(cloud: cloud) { [weak self] size in
             self?.popover.contentSize = size
         })
+        workspaceObservation = cloud.$store.receive(on: RunLoop.main).sink { [weak self] store in
+            self?.observeStore(store)
+        }
+        observeStore(store)
+        Task {
+            if CommandLine.arguments.contains("--demo") { store.loadDemo() }
+            else if CommandLine.arguments.contains("--connect-local") { await store.connectLocalAccounts() }
+            else { await store.refresh() }
+            if CommandLine.arguments.contains("--show"), !popover.isShown { togglePopover() }
+        }
+    }
+
+    private func observeStore(_ store: AppStore) {
+        store.onWidgetSnapshotChange = { [weak self] snapshot in self?.widgetPublisher.submit(snapshot) }
+        store.publishWidgetSnapshot()
+        statusItem.button?.title = store.menuTitle
+        statusItem.button?.toolTip = store.menuTooltip
         observation = store.objectWillChange
             .debounce(for: .milliseconds(100), scheduler: RunLoop.main)
             .sink { [weak self] in
@@ -55,12 +72,6 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate
                 self.statusItem.button?.toolTip = self.store.menuTooltip
                 self.showExpiryNoticeIfNeeded()
             }
-        Task {
-            if CommandLine.arguments.contains("--demo") { store.loadDemo() }
-            else if CommandLine.arguments.contains("--connect-local") { await store.connectLocalAccounts() }
-            else { await store.refresh() }
-            if CommandLine.arguments.contains("--show"), !popover.isShown { togglePopover() }
-        }
     }
 
     @objc private func togglePopover() {

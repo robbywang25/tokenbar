@@ -48,6 +48,19 @@ struct ResetCalendarHistory: Codable, Equatable {
         accounts.removeValue(forKey: id)
     }
 
+    mutating func mergeSynced(_ records: [QuotaResetRecord], account: AccountConfig, reading: AccountReading?, at now: Date) {
+        let signature = AccountEmail.sourceSignature(account)
+        var value = accounts[account.id] ?? AccountHistory(sourceSignature: signature)
+        if value.sourceSignature != signature || reading.map(value.conflicts) == true { value = AccountHistory(sourceSignature: signature) }
+        if let reading {
+            value.identityKey = reading.identityKey
+            value.verifiedEmailDigest = Self.emailDigest(reading.email)
+            value.sourceHistoryIdentity = reading.resetHistoryIdentity
+        }
+        value.archived = Self.normalized(value.archived + records.filter { $0.resetsAt <= now })
+        accounts[account.id] = value
+    }
+
     func sanitized(accounts configured: [AccountConfig], readings: [UUID: AccountReading]) -> ResetCalendarHistory {
         let byID = Dictionary(configured.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var copy = ResetCalendarHistory()

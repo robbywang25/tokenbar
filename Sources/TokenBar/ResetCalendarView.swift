@@ -3,7 +3,7 @@ import SwiftUI
 struct ResetCalendarView: View {
     @ObservedObject var store: AppStore
     @Binding var selectedDate: Date
-    @AppStorage("resetCalendarTimeZone.v1") private var timeZoneID = "local"
+    private var timeZoneID: String { store.calendarTimeZoneID }
 
     private var timeZone: TimeZone {
         timeZoneID == "local" ? .autoupdatingCurrent : TimeZone(identifier: timeZoneID) ?? .autoupdatingCurrent
@@ -30,7 +30,7 @@ struct ResetCalendarView: View {
                 Text(model.summary(in: monthEvents)).font(.caption).foregroundStyle(.secondary)
                 Spacer(minLength: 4)
                 Menu {
-                    Picker("日历时区", selection: $timeZoneID) {
+                    Picker("日历时区", selection: Binding(get: { store.calendarTimeZoneID }, set: { store.setCalendarTimeZone($0) })) {
                         Text("本机时间").tag("local")
                         Text("UTC").tag("UTC")
                         Text("北京时间").tag("Asia/Shanghai")
