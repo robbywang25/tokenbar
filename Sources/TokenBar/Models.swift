@@ -117,6 +117,8 @@ struct QuotaWindow: Codable, Identifiable, Equatable {
     var group: String = "default"
     var model: String? = nil
     var unlimited: Bool = false
+    // Read-side history supplied for this exact window, never the legacy primary stream.
+    var usageTrend: QuotaUsageTrend? = nil
     // Preserve Reserve in the source/cache while excluding it from presentation.
     var isVisibleInUI: Bool { group != "reserve" }
     var title: String {

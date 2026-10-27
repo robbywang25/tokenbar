@@ -269,7 +269,7 @@ struct ProviderClient {
             result.planMultiplier = multiplier
         }
         if let reason = account["reason"] as? String,
-           ["connected", "stale", "needs_auth", "unavailable", "not_configured", "unsupported", "expired", "network_error", "invalid_data", "duplicate", "pooled", "rate_limited", "reset_passed"].contains(reason) {
+           ["connected", "stale", "needs_auth", "unavailable", "not_configured", "unsupported", "expired", "network_error", "invalid_data", "duplicate", "pooled", "rate_limited", "reset_passed", "no_usage_data", "unsupported_client"].contains(reason) {
             result.reason = reason
         }
         if result.reason == "rate_limited" { result.retryAt = date(account["retryAt"]) }
@@ -298,6 +298,8 @@ struct ProviderClient {
         // Reason messages are a fixed projection, including when historical
         // quota data is retained. Never copy an upstream detail/error body.
         switch reason {
+        case "no_usage_data": result.detail = "来源未提供用量数据，当前额度未知。"
+        case "unsupported_client": result.detail = "官方已停止支持此采集客户端。"
         case "rate_limited": result.detail = "平台暂时限流，等待重试。"
         case "reset_passed": result.detail = "已到平台提供的刷新时间，等待新读数确认。"
         case "invalid_data": result.detail = ProviderError.invalidData.message
@@ -326,7 +328,8 @@ struct ProviderClient {
         guard ["default", "reserve", "code-review", "additional"].contains(group) else { throw ProviderError.invalidData }
         let unit = value["unit"] as? String ?? "percent"
         guard ["percent", "tokens", "requests", "messages", "credits", "USD"].contains(unit) else { throw ProviderError.invalidData }
-        return QuotaWindow(id: id, label: safeName(value["label"]) ?? label(id, seconds: number(value["windowSeconds"])), remainingPercent: percent, remaining: remaining, limit: limit, unit: unit, resetsAt: date(value["resetsAt"]), startsAt: date(value["startsAt"]), group: group, model: identifier(value["model"]), unlimited: unlimited)
+        return QuotaWindow(id: id, label: safeName(value["label"]) ?? label(id, seconds: number(value["windowSeconds"])), remainingPercent: percent, remaining: remaining, limit: limit, unit: unit, resetsAt: date(value["resetsAt"]), startsAt: date(value["startsAt"]), group: group, model: identifier(value["model"]), unlimited: unlimited,
+            usageTrend: group != "reserve" && !unlimited && unit == "percent" ? QuotaUsageTrend.parse(value["usageTrend"]) : nil)
     }
 
     /// Imports observed past resets only. Reserve, future dates, and malformed entries are skipped.

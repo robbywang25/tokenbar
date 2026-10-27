@@ -123,7 +123,14 @@ struct GodSyncJournal: Codable {
 
 enum GodSyncProjection {
     static func reading(_ reading: AccountReading) throws -> SyncJSON {
-        var object = try SyncJSON.encode(reading).object!
+        // Trends are fetched from the authoritative source on each device.
+        // Do not expand the deployed strict sync schema or repeatedly upload history.
+        var portable = reading
+        if ["no_usage_data", "unsupported_client"].contains(portable.reason) { portable.reason = nil }
+        portable.windows = portable.windows.map { window in
+            var window = window; window.usageTrend = nil; return window
+        }
+        var object = try SyncJSON.encode(portable).object!
         for field in ["name", "detail", "resetHistory"] { object.removeValue(forKey: field) }
         return .object(object)
     }

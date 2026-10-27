@@ -201,7 +201,7 @@ struct DashboardView: View {
                             .font(.subheadline).foregroundStyle(.secondary)
                     } else if !reading.visibleWindows.isEmpty {
                         VStack(spacing: 12) {
-                            ForEach(reading.visibleWindows) { window in quotaRow(window, fresh: fresh) }
+                            ForEach(reading.visibleWindows) { window in quotaRow(window, reading: reading, fresh: fresh) }
                         }
                     }
                     if reading.credits != nil || reading.unlimitedCredits || reading.resetCardsAvailable != nil {
@@ -313,7 +313,7 @@ struct DashboardView: View {
         return alerts.contains("即将重置") ? "即将重置" : alerts.first
     }
 
-    private func quotaRow(_ window: QuotaWindow, fresh: Bool) -> some View {
+    private func quotaRow(_ window: QuotaWindow, reading: AccountReading, fresh: Bool) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -358,6 +358,7 @@ struct DashboardView: View {
                 }
             }
             .font(.system(size: 10)).foregroundStyle(.secondary)
+            QuotaTrendView(window: window, reading: reading, now: store.now)
         }
     }
 
