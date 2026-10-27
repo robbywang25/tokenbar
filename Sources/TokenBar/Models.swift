@@ -60,6 +60,10 @@ struct AccountConfig: Codable, Identifiable, Equatable {
         case "xai": return "xAI"
         case "grokbot": return "GrokBot"
         case "cursor": return "Cursor"
+        case "geminicli": return "Gemini CLI"
+        case "geminiweb": return "Gemini Web"
+        case "geminiapi": return "Gemini API"
+        case "antigravitycli": return "AG CLI"
         default: return label.count > 8 ? String(label.prefix(8)) + "…" : label
         }
     }

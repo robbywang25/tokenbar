@@ -566,7 +566,10 @@ final class AppStore: ObservableObject {
             for entry in catalog.entries where !source.excludedAccountIDs.contains(entry.id) {
                 if let index = updated.firstIndex(where: { source.owns($0) && $0.sourceAccountID == entry.id }) {
                     updated[index].snapshotSourceID = source.id
-                    if updated[index].serviceLabel == nil { updated[index].serviceLabel = entry.serviceLabel }
+                    // Service metadata belongs to the subscribed source. Keep
+                    // the local account identity and user name while following
+                    // channel refinements such as Gemini CLI / Web / API.
+                    updated[index].serviceLabel = entry.serviceLabel
                 } else if source.discoversAccounts && entry.shouldDiscover {
                     guard updated.count < 1_000 else { errorMessage = "账号数量超过上限，新增账号未能同步。"; return }
                     var account = source.connection

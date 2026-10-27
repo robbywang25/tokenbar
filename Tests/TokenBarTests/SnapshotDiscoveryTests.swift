@@ -3,6 +3,30 @@ import XCTest
 @testable import TokenBar
 
 final class SnapshotDiscoveryTests: XCTestCase {
+    @MainActor
+    func testSubscribedServiceLabelChangesWithoutReplacingAccountOrMenuChoices() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.write([row("gemini-web", service: "Gemini")])
+        let store = f.store(); try await store.connectSnapshotSource(f.connection)
+        let original = try XCTUnwrap(store.accounts.first)
+        store.setMenuQuota(accountID: original.id, windowID: "weekly", enabled: true)
+        let selection = store.menuQuotaSelection
+        let history = store.calendarModel().events.count
+        try f.write([row("gemini-web", service: "Gemini Web")])
+        await store.refresh()
+        let updated = try XCTUnwrap(store.accounts.first)
+        XCTAssertEqual(updated.id, original.id)
+        XCTAssertEqual(updated.name, original.name)
+        XCTAssertEqual(updated.serviceLabel, "Gemini Web")
+        XCTAssertEqual(updated.menuAgentPrefix, "Gemini Web")
+        XCTAssertEqual(store.menuQuotaSelection, selection)
+        XCTAssertEqual(store.calendarModel().events.count, history)
+        let restored = f.store(); await restored.refresh()
+        XCTAssertEqual(restored.accounts.first?.id, original.id)
+        XCTAssertEqual(restored.accounts.first?.serviceLabel, "Gemini Web")
+        XCTAssertEqual(restored.menuQuotaSelection, selection)
+    }
+
     func testCatalogAcceptsFutureProvidersAndAdditionalAccountsPreservingUnitsAndAge() throws {
         let old = Date().addingTimeInterval(-600)
         let data = try JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "collectedAt": old.timeIntervalSince1970,
