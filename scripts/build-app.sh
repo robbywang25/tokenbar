@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="${TOKENBAR_DIST_DIR:-$ROOT_DIR/dist}"
 SIGN_IDENTITY="${TOKENBAR_SIGN_IDENTITY:--}"
 VERSION="${TOKENBAR_VERSION:-0.4.0}"
-BUILD_NUMBER="${TOKENBAR_BUILD_NUMBER:-23}"
+BUILD_NUMBER="${TOKENBAR_BUILD_NUMBER:-24}"
 ARCHS=()
 WITH_WIDGET=false
 
@@ -21,7 +21,7 @@ Developer ID Application signing identity. Ad-hoc builds stay menu-bar-only.
 
 Optional environment variables:
   TOKENBAR_VERSION          Marketing version (default: 0.4.0)
-  TOKENBAR_BUILD_NUMBER     Bundle build number (default: 23)
+  TOKENBAR_BUILD_NUMBER     Bundle build number (default: 24)
   TOKENBAR_DIST_DIR         Output directory (default: ./dist)
   TOKENBAR_SIGN_IDENTITY    Apple Development / Developer ID Application; default: -
 

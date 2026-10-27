@@ -71,26 +71,79 @@ struct QuotaUsageTrend: Codable, Equatable {
     }
 
     static func instant(_ raw: Any?) -> Date? {
-        guard let text = raw as? String, text.count <= 40,
-              text.range(of: "\\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})\\z", options: .regularExpression) != nil else { return nil }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let date = formatter.date(from: text) ?? {
-            formatter.formatOptions = [.withInternetDateTime]; return formatter.date(from: text)
-        }()
-        guard let date, date.timeIntervalSince1970 >= 1_577_836_800, date.timeIntervalSince1970 < 4_102_444_800 else { return nil }
-        // Foundation normalizes invalid calendar days; round-trip the local components.
-        let components = String(text.prefix(19))
-        let strict = DateFormatter(); strict.locale = Locale(identifier: "en_US_POSIX")
-        strict.calendar = Calendar(identifier: .gregorian); strict.timeZone = TimeZone(secondsFromGMT: 0)
-        strict.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"; strict.isLenient = false
-        guard let local = strict.date(from: components), strict.string(from: local) == components else { return nil }
-        if !text.hasSuffix("Z") {
-            let suffix = text.suffix(6)
-            guard let hours = Int(suffix.dropFirst().prefix(2)), let minutes = Int(suffix.suffix(2)),
-                  hours <= 14, minutes < 60, hours != 14 || minutes == 0 else { return nil }
+        // Every accepted spelling is ASCII and at most 35 bytes. Validate the
+        // fixed grammar directly: constructing formatters for each of thousands
+        // of history points blocks the native UI, and shared mutable formatters
+        // would be unsafe when independent sources parse concurrently.
+        guard let text = raw as? String, (20...35).contains(text.utf8.count) else { return nil }
+        let bytes = Array(text.utf8)
+        guard bytes[4] == 45, bytes[7] == 45, bytes[10] == 84,
+              bytes[13] == 58, bytes[16] == 58 else { return nil }
+        func digits(_ start: Int, _ length: Int) -> Int? {
+            var value = 0
+            for index in start..<(start + length) {
+                let digit = Int(bytes[index]) - 48
+                guard (0...9).contains(digit) else { return nil }
+                value = value * 10 + digit
+            }
+            return value
         }
-        return date
+        guard let year = digits(0, 4), (2019...2100).contains(year),
+              let month = digits(5, 2), (1...12).contains(month),
+              let day = digits(8, 2), day >= 1,
+              let hour = digits(11, 2), hour <= 23,
+              let minute = digits(14, 2), minute <= 59,
+              let second = digits(17, 2), second <= 59 else { return nil }
+        let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+        let maximumDay: Int
+        switch month {
+        case 2: maximumDay = leap ? 29 : 28
+        case 4, 6, 9, 11: maximumDay = 30
+        default: maximumDay = 31
+        }
+        guard day <= maximumDay else { return nil }
+
+        var cursor = 19, fractionalDigits = 0, fractionalValue = 0, scale = 1
+        if bytes[cursor] == 46 {
+            cursor += 1
+            while cursor < bytes.count, (48...57).contains(bytes[cursor]) {
+                fractionalDigits += 1
+                guard fractionalDigits <= 9 else { return nil }
+                fractionalValue = fractionalValue * 10 + Int(bytes[cursor]) - 48
+                scale *= 10; cursor += 1
+            }
+            guard fractionalDigits > 0 else { return nil }
+        }
+        guard cursor < bytes.count else { return nil }
+        let offset: Int
+        if bytes[cursor] == 90 {
+            guard cursor + 1 == bytes.count else { return nil }
+            offset = 0
+        } else {
+            guard bytes.count - cursor == 6, bytes[cursor] == 43 || bytes[cursor] == 45,
+                  bytes[cursor + 3] == 58,
+                  let zoneHours = digits(cursor + 1, 2), zoneHours <= 14,
+                  let zoneMinutes = digits(cursor + 4, 2), zoneMinutes <= 59,
+                  zoneHours != 14 || zoneMinutes == 0 else { return nil }
+            offset = (bytes[cursor] == 45 ? -1 : 1) * (zoneHours * 3_600 + zoneMinutes * 60)
+        }
+
+        // Gregorian civil-date arithmetic, with March as month zero so leap
+        // days are accounted for at the end of each year. The accepted UTC
+        // range and ±14h offsets can only involve local years 2019...2100.
+        let adjustedYear = year - (month <= 2 ? 1 : 0)
+        let era = adjustedYear / 400
+        let yearOfEra = adjustedYear - era * 400
+        let marchMonth = month + (month > 2 ? -3 : 9)
+        let dayOfYear = (153 * marchMonth + 2) / 5 + day - 1
+        let dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear
+        let daysSinceEpoch = era * 146_097 + dayOfEra - 719_468
+        let wholeSeconds = daysSinceEpoch * 86_400 + hour * 3_600 + minute * 60 + second - offset
+        guard wholeSeconds >= 1_577_836_800, wholeSeconds < 4_102_444_800 else { return nil }
+        let instant = Double(wholeSeconds) + Double(fractionalValue) / Double(scale)
+        // Date uses Double seconds. A valid sub-microsecond instant immediately
+        // before 2100 must not round outside the exclusive upper bound.
+        return Date(timeIntervalSince1970: min(instant, Double(4_102_444_800).nextDown))
     }
 
     func analysis(window: QuotaWindow, reading: AccountReading, now: Date) -> QuotaUsageAnalysis {
