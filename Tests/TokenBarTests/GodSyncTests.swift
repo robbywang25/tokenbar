@@ -234,6 +234,52 @@ final class GodSyncTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testRejectedQuotaAccessQuarantinesGodHistoryAndMenuWithoutSigningOutOrTouchingLocalSources() async throws {
+        for status in [401, 403] {
+            let fixture = try SyncFixture(), backend = SyncBackend()
+            SyncURLProtocol.handler = { backend.respond($0) }
+            defer { SyncURLProtocol.handler = nil; fixture.remove() }
+            backend.includesTrends = true
+            let workspace = fixture.workspace()
+            await workspace.authentication.restore()
+            let god = try XCTUnwrap(workspace.store.accounts.first(where: { $0.sourceAccountID == "claude-1" }))
+            XCTAssertEqual(workspace.store.readings[god.id]?.windows.first?.remainingPercent, 70)
+            XCTAssertNotNil(workspace.store.readings[god.id]?.windows.first?.usageTrend)
+            workspace.store.setMenuQuota(accountID: god.id, windowID: "weekly", enabled: true)
+            XCTAssertTrue(workspace.store.menuTitle.contains("70"))
+            let localFile = fixture.root.appendingPathComponent("independent.json")
+            let localData: [String: Any] = ["id": "independent", "status": "connected", "lastSuccessAt": Date().timeIntervalSince1970,
+                "windows": [["id": "weekly", "label": "Independent", "remainingPercent": 55]]]
+            try JSONSerialization.data(withJSONObject: localData).write(to: localFile)
+            let local = AccountConfig(provider: .snapshot, name: "Independent", method: .snapshotFile, location: localFile.path)
+            workspace.store.accounts.append(local)
+            await workspace.store.refresh()
+            let localReading = try XCTUnwrap(workspace.store.readings[local.id])
+            backend.quotaStatus = status; backend.tokenStatus = 500
+            await workspace.store.refresh(historyOnly: true)
+            XCTAssertTrue(workspace.authentication.hasSession); XCTAssertNotNil(workspace.authentication.user)
+            XCTAssertEqual(workspace.store.readings[god.id]?.status, .needsAuth)
+            XCTAssertTrue(workspace.store.readings[god.id]?.windows.isEmpty == true)
+            XCTAssertFalse(workspace.store.menuTitle.contains("70"))
+            XCTAssertEqual(workspace.store.readings[local.id], localReading)
+            // Even a stale file left behind by a failed replacement cannot
+            // bypass the persisted source barrier after AppStore restarts.
+            let godFile = workspace.store.storageDirectory.appendingPathComponent("god-quotas.json")
+            try JSONSerialization.data(withJSONObject: backend.quotas()).write(to: godFile)
+            let reloaded = AppStore(directory: workspace.store.storageDirectory, startTimers: false, defaults: workspace.store.preferences)
+            await reloaded.refresh(historyOnly: true)
+            XCTAssertEqual(reloaded.readings[god.id]?.status, .needsAuth)
+            XCTAssertFalse(reloaded.menuTitle.contains("70"))
+            backend.quotaStatus = 200; backend.tokenStatus = 200
+            await workspace.store.refresh(historyOnly: true)
+            XCTAssertEqual(workspace.store.readings[god.id]?.windows.first?.remainingPercent, 70)
+            XCTAssertNotNil(workspace.store.readings[god.id]?.windows.first?.usageTrend)
+            XCTAssertTrue(workspace.authentication.hasSession)
+            workspace.stop(); reloaded.stop()
+        }
+    }
+
     private func preference(_ name: String, _ value: SyncJSON) -> SyncJSON { .object(["kind": .string("preference"), "name": .string(name), "value": value]) }
 }
 
@@ -281,11 +327,20 @@ private final class SyncBackend: @unchecked Sendable {
     var refreshCount = 0
     var tokenDelay: TimeInterval = 0
     var onRefresh: (() -> Void)?
+    var quotaStatus = 200
+    var tokenStatus = 200
+    var includesTrends = false
     let observed = Date()
     func quotas() -> [String: Any] {
-        ["schemaVersion": 1, "collectedAt": observed.timeIntervalSince1970, "accounts": [["id": "claude-1", "serviceLabel": "Claude Code", "status": "connected",
+        var window: [String: Any] = ["id": "weekly", "label": "每周", "remainingPercent": 70, "resetsAt": observed.addingTimeInterval(3600).timeIntervalSince1970]
+        if includesTrends {
+            let formatter = ISO8601DateFormatter(), stamp = formatter.string(from: observed)
+            window["usageTrend"] = ["status": "ready", "metric": "quota", "unit": "percentage-points", "from": formatter.string(from: observed.addingTimeInterval(-3600)),
+                "to": stamp, "bucketSeconds": 300, "balancePoints": [["at": stamp, "remaining": 70, "connect": false]], "totalUsed": 0, "coverageSeconds": 1, "observedAt": stamp]
+        }
+        return ["schemaVersion": 1, "collectedAt": observed.timeIntervalSince1970, "accounts": [["id": "claude-1", "serviceLabel": "Claude Code", "status": "connected",
           "profile": ["email": "fixture@example.test"], "lastSuccessAt": observed.timeIntervalSince1970, "resetHistoryIdentity": SyncFixture.historyEpoch,
-          "windows": [["id": "weekly", "label": "每周", "remainingPercent": 70, "resetsAt": observed.addingTimeInterval(3600).timeIntervalSince1970]]]]]
+          "windows": [window]]]]
     }
     func respond(_ request: URLRequest) -> (Int, Data) {
         lock.lock(); defer { lock.unlock() }
@@ -299,10 +354,13 @@ private final class SyncBackend: @unchecked Sendable {
                                "grant_types_supported": ["authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"], "token_endpoint_auth_methods_supported": ["none"]]))
         case "/api/oidc/token":
             refreshCount += 1; onRefresh?(); if tokenDelay > 0 { Thread.sleep(forTimeInterval: tokenDelay) }
+            if tokenStatus != 200 { return (tokenStatus, json(["error": "temporarily_unavailable"])) }
             return (200, json(["access_token": "synthetic-access-" + SyncFixture.ownerID, "refresh_token": "synthetic-refresh-rotated", "token_type": "Bearer", "expires_in": 300, "scope": SyncFixture.configuration.scopes.joined(separator: " ")]))
         case "/api/oidc/revocation": return (200, Data("{}".utf8))
         case "/api/tokenbar/v1/session": return (200, json(["schemaVersion": 1, "user": ["id": user, "label": "Fixture user", "quotaAccess": user == SyncFixture.ownerID]]))
-        case "/api/tokenbar/v1/quotas": return user == SyncFixture.ownerID ? (200, json(quotas())) : (403, json(["error": "quotas_not_configured"]))
+        case "/api/tokenbar/v1/quotas":
+            if quotaStatus != 200 { return (quotaStatus, json(["error": "quota_authorization_failed"])) }
+            return user == SyncFixture.ownerID ? (200, json(quotas())) : (403, json(["error": "quotas_not_configured"]))
         case "/api/tokenbar/v1/sync":
             var document = documents[user] ?? GodSyncDocument()
             if request.httpMethod == "PATCH" {

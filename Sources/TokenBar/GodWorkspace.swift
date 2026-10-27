@@ -123,13 +123,19 @@ final class GodWorkspace: ObservableObject {
     }
 
     private func refreshQuotas(run: Int) async {
-        guard epoch == run, let profile, let user = authentication.user, user.quotaAccess else { return }
+        guard epoch == run, let profile, let user = authentication.user else { return }
+        guard user.quotaAccess else { quarantineQuotas(profile: profile); return }
+        let range = store.trendRange
         do {
-            let response = try await authentication.request(path: "/quotas", limit: ProviderClient.maximumBytes)
+            let response = try await authentication.request(path: range.godPath, limit: ProviderClient.maximumBytes)
             guard response.status == 200 else { throw response.status == 403 ? GodError.denied : .unavailable }
+            let envelope = try JSONSerialization.jsonObject(with: response.data) as? [String: Any]
+            guard envelope?["historyRange"] as? String == range.rawValue ||
+                    (range == .hour && envelope?["historyRange"] == nil) else { throw GodError.invalidResponse }
             let catalog = try SnapshotCatalog.parse(response.data, source: "god", at: Date())
-            guard epoch == run else { return }
+            guard epoch == run, store.trendRange == range else { return }
             try GodAuthentication.savePrivate(response.data, to: profile.appendingPathComponent("god-quotas.json"))
+            store.setQuotaSourceAuthorization(Self.godID, allowed: true)
             var records: [String: SyncJSON] = [:]
             for entry in catalog.entries where entry.shouldDiscover {
                 let config = AccountConfig(provider: .snapshot, name: entry.serviceLabel, method: .snapshotFile,
@@ -144,8 +150,19 @@ final class GodWorkspace: ObservableObject {
         catch {
             guard epoch == run else { return }
             if error as? GodError == .signedOut { authentication.signOut() }
+            else if error as? GodError == .denied { quarantineQuotas(profile: profile) }
             else { syncMessage = GodError.unavailable.localizedDescription }
         }
+    }
+
+    private func quarantineQuotas(profile: URL) {
+        canonicalAccounts = [:]
+        store.setQuotaSourceAuthorization(Self.godID, allowed: false)
+        // The persisted per-source barrier remains effective even if replacing
+        // the old quota file fails. Independent local sources are untouched.
+        try? GodAuthentication.savePrivate(Data("{\"schemaVersion\":1,\"accounts\":[]}".utf8),
+                                           to: profile.appendingPathComponent("god-quotas.json"))
+        syncMessage = "额度授权暂不可用，稍后刷新会重新验证。"
     }
 
     private func localRecords() throws -> [String: SyncJSON] {

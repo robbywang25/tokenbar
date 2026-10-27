@@ -199,6 +199,9 @@ struct QuotaResetRecord: Codable, Equatable {
 struct ResetCard: Codable, Equatable {
     var status: String
     var expiresAt: Date?
+    var startsAt: Date? = nil
+    var grantedAt: Date? = nil
+    var resetType: String? = nil
 }
 
 struct AccountReading: Codable, Equatable {
@@ -226,10 +229,16 @@ struct AccountReading: Codable, Equatable {
     // Past resets supplied by a source. Never an input to windows, freshness, menus, widgets, or alerts.
     var resetHistory: [QuotaResetRecord]? = nil
     var resetHistoryIdentity: String? = nil
+    var product: String? = nil
+    // Used requests/tokens in a measured interval, never a remaining allowance.
+    var usageMetrics: [UsageMetric]? = nil
+    // Dated observations remain separate from native balances and sync records.
+    var reportedResetCards: ReportedResetCards? = nil
 
     var visibleWindows: [QuotaWindow] { windows.filter(\.isVisibleInUI) }
     var hasVisibleSupplementalQuota: Bool { credits != nil || unlimitedCredits || resetCardsAvailable != nil }
     var hasVisibleQuota: Bool { !visibleWindows.isEmpty || hasVisibleSupplementalQuota }
+    var hasUsageMetrics: Bool { usageMetrics?.isEmpty == false }
 
     func isFresh(at now: Date, maxAge: TimeInterval = 120) -> Bool {
         guard status == .connected, let success = lastSuccessAt,
@@ -238,6 +247,7 @@ struct AccountReading: Codable, Equatable {
             guard let source = sourceCollectedAt, source <= now.addingTimeInterval(60),
                   now.timeIntervalSince(source) <= maxAge else { return false }
         }
+        if let metrics = usageMetrics, metrics.contains(where: { $0.observedAt > now.addingTimeInterval(60) || now.timeIntervalSince($0.observedAt) > maxAge }) { return false }
         return !visibleWindows.contains { ($0.resetsAt ?? .distantFuture) <= now }
     }
     func displayStatus(at now: Date) -> ReadingStatus {

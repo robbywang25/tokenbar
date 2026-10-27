@@ -227,7 +227,7 @@ final class GodAuthentication: ObservableObject {
     }
 
     func request(path: String, method: String = "GET", body: Data? = nil, limit: Int = 16 * 1024 * 1024) async throws -> GodHTTPResponse {
-        guard ["/session", "/quotas", "/sync"].contains(path), method == "GET" || (path == "/sync" && method == "PATCH") else { throw GodError.invalidResponse }
+        guard ["/session", "/quotas", "/quotas?range=1h", "/quotas?range=24h", "/quotas?range=7d", "/sync"].contains(path), method == "GET" || (path == "/sync" && method == "PATCH") else { throw GodError.invalidResponse }
         let run = generation
         var current = try await validToken()
         for attempt in 0...1 {
@@ -237,7 +237,20 @@ final class GodAuthentication: ObservableObject {
             if body != nil { req.setValue("application/json", forHTTPHeaderField: "Content-Type") }
             let response = try await http.send(req, limit: limit)
             try check(run)
-            if response.status == 401 && attempt == 0 { current = try await validToken(forceRefresh: true); continue }
+            if response.status == 401 && attempt == 0 {
+                do { current = try await validToken(forceRefresh: true) }
+                catch {
+                    // A failed token refresh cannot undo the quota endpoint's
+                    // explicit authorization rejection. Keep retryable login
+                    // state, but tell the workspace to quarantine its quota cache.
+                    if path == "/quotas" || path.hasPrefix("/quotas?range=") {
+                        if error as? GodError == .signedOut || error is CancellationError { throw error }
+                        throw GodError.denied
+                    }
+                    throw error
+                }
+                continue
+            }
             if response.status == 401 { throw GodError.signedOut }
             return response
         }

@@ -74,6 +74,7 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate
                 let title = self.store.menuTitle
                 if self.statusItem.button?.title != title { self.statusItem.button?.title = title }
                 self.statusItem.button?.toolTip = self.store.menuTooltip
+                self.applyMenuPanelFocusLossBehavior()
                 self.showExpiryNoticeIfNeeded()
             }
     }
@@ -110,7 +111,7 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate
 
     func popoverShouldClose(_ popover: NSPopover) -> Bool {
         if closingFromStatusItem { return true }
-        let dismisses = menuPanelDismissesOnFocusLoss(cloud.authentication)
+        let dismisses = menuPanelDismissesOnFocusLoss(cloud.authentication, presentationActive: store.isPresentingFileExporter)
         if !dismisses { self.popover.behavior = .applicationDefined }
         return dismisses
     }
@@ -118,16 +119,19 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate
     func popoverDidClose(_ notification: Notification) { showExpiryNoticeIfNeeded() }
 
     private func applyMenuPanelFocusLossBehavior() {
-        popover.behavior = menuPanelDismissesOnFocusLoss(cloud.authentication) ? .transient : .applicationDefined
+        popover.behavior = menuPanelDismissesOnFocusLoss(cloud.authentication, presentationActive: store.isPresentingFileExporter) ? .transient : .applicationDefined
     }
 
     private func showExpiryNoticeIfNeeded() {
-        guard !popover.isShown, !expiryNotice.isVisible,
+        guard !popover.isShown, !expiryNotice.isVisible, store.passiveNoticesAllowed,
               let button = statusItem?.button, let window = button.window,
-              let screen = window.screen,
-              let notice = store.takeNextExpiryNotice() else { return }
+              let screen = window.screen else { return }
         let rect = window.convertToScreen(button.convert(button.bounds, to: nil))
-        expiryNotice.show(notice, below: rect, on: screen)
+        if let notice = store.takeNextInsightNotice() {
+            expiryNotice.show(title: notice.title, message: notice.message, below: rect, on: screen)
+        } else if let notice = store.takeNextExpiryNotice() {
+            expiryNotice.show(notice, below: rect, on: screen)
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -136,13 +140,12 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate
     }
 }
 
-/// Focus loss may dismiss the menu panel except while a device-authorization
-/// confirmation code is still pending. The popover path calls this both when
-/// AppKit asks to close and when it chooses transient behavior. Idle panels
-/// stay transient. A pending code keeps the same surface, including copy and
-/// the action that opens the verification page again.
+/// Keep the hosting surface alive while a God confirmation or native export
+/// panel is pending. Closing/cancelling the presentation restores ordinary
+/// transient behavior; an explicit menu-bar click can still close the panel.
 @MainActor
-func menuPanelDismissesOnFocusLoss(_ authentication: GodAuthentication) -> Bool {
+func menuPanelDismissesOnFocusLoss(_ authentication: GodAuthentication, presentationActive: Bool = false) -> Bool {
+    if presentationActive { return false }
     guard authentication.isSigningIn, let code = authentication.userCode, !code.isEmpty else { return true }
     return false
 }

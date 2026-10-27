@@ -1,6 +1,14 @@
 import Foundation
 import CoreFoundation
 
+enum QuotaHistoryRange: String, Codable, CaseIterable, Identifiable {
+    case hour = "1h", day = "24h", week = "7d"
+    var id: String { rawValue }
+    var title: String { self == .hour ? "1 小时" : self == .day ? "24 小时" : "7 天" }
+    var duration: TimeInterval { self == .hour ? 3_600 : self == .day ? 86_400 : 604_800 }
+    var godPath: String { self == .hour ? "/quotas" : "/quotas?range=" + rawValue }
+}
+
 struct QuotaBalancePoint: Codable, Equatable {
     var at: Date
     var remaining: Double
@@ -17,6 +25,8 @@ struct QuotaUsageTrend: Codable, Equatable {
     var totalUsed: Double?
     var coverageSeconds: Double
     var observedAt: Date?
+
+    var range: QuotaHistoryRange? { QuotaHistoryRange.allCases.first { $0.duration == to.timeIntervalSince(from) } }
 
     var rangeLabel: String {
         to.timeIntervalSince(from) == 86_400 ? "近24小时" : to.timeIntervalSince(from) == 604_800 ? "近7天" : "近1小时"
@@ -55,12 +65,12 @@ struct QuotaUsageTrend: Codable, Equatable {
                     balancePoints: points, totalUsed: used, coverageSeconds: coverage, observedAt: observed)
     }
 
-    private static func number(_ raw: Any?) -> Double? {
+    static func number(_ raw: Any?) -> Double? {
         guard let n = raw as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.isFinite else { return nil }
         return n.doubleValue
     }
 
-    private static func instant(_ raw: Any?) -> Date? {
+    static func instant(_ raw: Any?) -> Date? {
         guard let text = raw as? String, text.count <= 40,
               text.range(of: "\\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})\\z", options: .regularExpression) != nil else { return nil }
         let formatter = ISO8601DateFormatter()

@@ -16,6 +16,12 @@ final class AppStore: ObservableObject {
     @Published var launchAtLogin = false
     @Published var now = Date()
     @Published var isDemo = false
+    @Published var isPresentingFileExporter = false
+    @Published private(set) var trendRange: QuotaHistoryRange = .hour
+    @Published private(set) var insightPreferences = QuotaInsightPreferences()
+    @Published private(set) var insightState = QuotaInsightState()
+    private var insightStateReadFailed = false
+    private var insightsPrimed = false
     @Published private(set) var calendarTimeZoneID = "local"
     // nil preserves the initial one-metric default; [] is an explicit opt-out.
     @Published private(set) var menuQuotaSelection: Set<String>?
@@ -52,6 +58,8 @@ final class AppStore: ObservableObject {
     private var clock: Timer?
     private var poll: Timer?
     private var revision = 0
+    private var pendingRangeRefresh = false
+    private var blockedQuotaSourceIDs: Set<UUID> = []
     private var wakeObserver: NSObjectProtocol?
     private var connecting = false
     private var snapshotSourcesReadFailed = false
@@ -60,9 +68,20 @@ final class AppStore: ObservableObject {
         self.client = client
         self.defaults = defaults
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("TokenBar")
+        blockedQuotaSourceIDs = Set((defaults.stringArray(forKey: "blockedQuotaSourceIDs.v1") ?? []).compactMap(UUID.init(uuidString:)))
+        trendRange = QuotaHistoryRange(rawValue: defaults.string(forKey: "trendRange.v1") ?? "") ?? .hour
         loadMenuPreferences()
         loadExpiryPreferences()
         load()
+        quarantineBlockedQuotaReadings()
+        if let data = defaults.data(forKey: "quotaInsightPreferences.v1"), data.count <= 64 * 1024,
+           let value = try? JSONDecoder().decode(QuotaInsightPreferences.self, from: data) { insightPreferences = value.normalized() }
+        do {
+            let loaded = try read(QuotaInsightState.self, name: "quota-insights.json")
+            try loaded.validate(); insightState = loaded
+        }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { }
+        catch { insightStateReadFailed = true; errorMessage = "提醒记录未能读取，原文件已保留。" }
         let saved = defaults.double(forKey: "refreshSeconds")
         if [10.0, 15, 30, 60, 120].contains(saved) { refreshSeconds = saved }
         launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -87,6 +106,119 @@ final class AppStore: ObservableObject {
         if let currentIdentity = readings[account.id]?.identityKey,
            let previousIdentity = saved.identityKey, currentIdentity != previousIdentity { return nil }
         return email
+    }
+
+    func setTrendRange(_ range: QuotaHistoryRange) {
+        guard range != trendRange else { return }
+        trendRange = range
+        if !isDemo { defaults.set(range.rawValue, forKey: "trendRange.v1") }
+        revision += 1
+        if isRefreshing { pendingRangeRefresh = true }
+        Task { await refresh(historyOnly: true) }
+    }
+
+    /// A rejected God read must not be revived by its last successful file or
+    /// menu fallback. The barrier is scoped to that source and survives restart.
+    func setQuotaSourceAuthorization(_ sourceID: UUID, allowed: Bool) {
+        if allowed {
+            guard blockedQuotaSourceIDs.remove(sourceID) != nil else { return }
+        } else {
+            guard blockedQuotaSourceIDs.insert(sourceID).inserted else { return }
+        }
+        defaults.set(blockedQuotaSourceIDs.map(\.uuidString), forKey: "blockedQuotaSourceIDs.v1")
+        if !allowed { quarantineBlockedQuotaReadings(); publishWidgetSnapshot() }
+    }
+
+    private func quarantineBlockedQuotaReadings() {
+        guard !blockedQuotaSourceIDs.isEmpty else { return }
+        for account in accounts where account.snapshotSourceID.map(blockedQuotaSourceIDs.contains) == true {
+            readings[account.id] = AccountReading(status: .needsAuth, checkedAt: Date(), lastSuccessAt: nil,
+                detail: "额度授权暂不可用，等待重新验证。", reason: "needs_auth")
+            menuReadingCache.removeValue(forKey: account.id)
+        }
+        persistReadings()
+        try? save(menuReadingCache, name: "menu-readings.json")
+    }
+
+    func quotaProduct(for account: AccountConfig, reading: AccountReading) -> String? {
+        if let product = reading.product { return product }
+        switch account.provider {
+        case .codex: return "codex"
+        case .claude: return "claude"
+        case .grok: return "grok"
+        case .snapshot: return nil
+        }
+    }
+
+    var visibleDashboardAccounts: [AccountConfig] {
+        orderedAccounts.filter { account in
+            switch insightPreferences.filter {
+            case .all: return true
+            case .favorites: return insightPreferences.favorites.contains(account.id)
+            case .attention: return QuotaInsightState.attentionReason(readings[account.id], now: now, threshold: insightPreferences.thresholds.max() ?? 20) != nil
+            }
+        }
+    }
+
+    func updateInsightPreferences(_ value: QuotaInsightPreferences) {
+        insightPreferences = value.normalized()
+        guard !isDemo else { return }
+        if let data = try? JSONEncoder().encode(insightPreferences) { defaults.set(data, forKey: "quotaInsightPreferences.v1") }
+    }
+
+    func toggleFavorite(_ account: AccountConfig) {
+        var value = insightPreferences
+        if !value.favorites.insert(account.id).inserted { value.favorites.remove(account.id) }
+        updateInsightPreferences(value)
+    }
+
+    func markInsightsRead() { insightState.readAt = Date(); persistInsights() }
+
+    var unreadInsightCount: Int { insightState.events.filter { $0.createdAt > (insightState.readAt ?? .distantPast) }.count }
+
+    func insightMessage(_ event: QuotaInsightEvent) -> String {
+        let window = readings[event.accountID]?.windows.first { $0.id == event.windowID }
+        switch event.kind {
+        case .low: return (window?.label ?? "额度") + "剩余 " + (event.remaining?.formatted(.number.precision(.fractionLength(0...1))) ?? "—") + "%（低于 " + String(event.threshold ?? 0) + "%）"
+        case .reset: return (window?.label ?? "额度") + "已确认进入新周期"
+        case .expiry: return "重置卡将于 " + (event.deadline?.formatted(date: .abbreviated, time: .shortened) ?? "未提供") + " 到期"
+        case .authentication: return "需要重新登录额度来源"
+        }
+    }
+
+    func takeNextInsightNotice() -> (title: String, message: String)? {
+        guard insightPreferences.passiveNotices, !isDemo, !isRefreshing, !insightStateReadFailed else { return nil }
+        let zone = calendarTimeZoneID == "local" ? TimeZone.autoupdatingCurrent : TimeZone(identifier: calendarTimeZoneID) ?? .autoupdatingCurrent
+        guard !insightPreferences.isQuiet(at: Date(), timeZone: zone),
+              let event = insightState.events.first(where: { event in
+                  guard !insightState.notified.contains(event.id), Date().timeIntervalSince(event.createdAt) <= 60,
+                        let account = accounts.first(where: { $0.id == event.accountID }), let reading = readings[event.accountID] else { return false }
+                  return insightState.isActionable(event, account: account, reading: reading, preferences: insightPreferences, now: Date())
+              }),
+              let account = accounts.first(where: { $0.id == event.accountID }) else { return nil }
+        insightState.notified.insert(event.id); persistInsights()
+        return (accountIdentityLabel(account) + " · " + account.displayService, insightMessage(event))
+    }
+
+    var passiveNoticesAllowed: Bool { passiveNoticesAllowed(at: Date()) }
+
+    func passiveNoticesAllowed(at date: Date) -> Bool {
+        let zone = calendarTimeZoneID == "local" ? TimeZone.autoupdatingCurrent : TimeZone(identifier: calendarTimeZoneID) ?? .autoupdatingCurrent
+        return !insightPreferences.isQuiet(at: date, timeZone: zone)
+    }
+
+    private func updateInsights() {
+        guard !isDemo, !insightStateReadFailed else { return }
+        let old = insightState
+        insightState.update(accounts: accounts, readings: readings, preferences: insightPreferences, now: now)
+        if !insightsPrimed { insightState.notified.formUnion(insightState.events.map(\.id)); insightsPrimed = true }
+        if old != insightState { persistInsights() }
+    }
+
+    private func persistInsights() {
+        guard !isDemo, !insightStateReadFailed else { return }
+        do { try save(insightState, name: "quota-insights.json") }
+        catch { errorMessage = "提醒记录未能保存到本机。" }
     }
 
     func accountIdentityLabel(_ account: AccountConfig) -> String {
@@ -324,6 +456,7 @@ final class AppStore: ObservableObject {
 
     private func menuReading(for id: UUID) -> (reading: AccountReading, historical: Bool)? {
         guard let account = accounts.first(where: { $0.id == id && $0.enabled }) else { return nil }
+        guard account.snapshotSourceID.map(blockedQuotaSourceIDs.contains) != true else { return nil }
         let current = readings[id]
         if let current, MenuReadingCache.blocksFallback(current) { return nil }
         if let current, current.isFresh(at: now) { return (current, false) }
@@ -403,11 +536,19 @@ final class AppStore: ObservableObject {
         if let data = try? JSONEncoder().encode(rememberedMenuMetrics) { defaults.set(data, forKey: Self.menuMetricsKey) }
     }
 
-    func refresh() async {
+    func refresh(historyOnly: Bool = false) async {
         // Opening the popover or waking the Mac must reclassify cached values
         // immediately, even while an earlier network refresh is still running.
         now = Date()
         guard !isRefreshing, !isDemo else { return }
+        let requestedRange = trendRange
+        defer {
+            isRefreshing = false
+            if pendingRangeRefresh || requestedRange != trendRange {
+                pendingRangeRefresh = false
+                Task { await self.refresh(historyOnly: true) }
+            }
+        }
         rememberMenuReadings()
         rememberAccountEmails()
         rememberMenuChoices()
@@ -420,8 +561,9 @@ final class AppStore: ObservableObject {
         var sourceErrors: [UUID: ProviderError] = [:]
         await withTaskGroup(of: (UUID, Result<SnapshotCatalog, ProviderError>).self) { group in
             for source in snapshotSources {
+                if blockedQuotaSourceIDs.contains(source.id) { sourceErrors[source.id] = .needsAuth; continue }
                 group.addTask {
-                    do { return (source.id, .success(try await provider.fetchCatalog(source.connection))) }
+                    do { return (source.id, .success(try await provider.fetchCatalog(source.connection, range: requestedRange))) }
                     catch { return (source.id, .failure(error as? ProviderError ?? .unavailable)) }
                 }
             }
@@ -434,11 +576,11 @@ final class AppStore: ObservableObject {
         }
         guard revision == currentRevision else { isRefreshing = false; return }
         reconcileSnapshotAccounts(catalogs)
-        let configs = accounts.filter(\.enabled)
+        let configs = accounts.filter { $0.enabled && (!historyOnly || $0.provider == .snapshot) }
         await withTaskGroup(of: (UUID, AccountReading).self) { group in
             for config in configs where config.snapshotSourceID == nil {
                 group.addTask {
-                    do { return (config.id, try await provider.fetch(config)) }
+                    do { return (config.id, try await provider.fetch(config, range: requestedRange)) }
                     catch {
                         let error = error as? ProviderError ?? .unavailable
                         return (config.id, AccountReading(status: error == .needsAuth ? .needsAuth : .unavailable,
@@ -461,7 +603,8 @@ final class AppStore: ObservableObject {
             }
             let baseline = readings
             now = Date()
-            var identities = Set<String>()
+            var identities = Set(accounts.filter { $0.enabled && historyOnly && $0.provider != .snapshot }
+                .compactMap { readings[$0.id]?.identityKey })
             for config in configs {
                 let id = config.id
                 guard revision == currentRevision, var reading = results[id], accounts.contains(where: { $0.id == id }) else { continue }
@@ -475,6 +618,7 @@ final class AppStore: ObservableObject {
         if revision == currentRevision { lastRefresh = Date(); rememberMenuReadings(); rememberAccountEmails(); rememberMenuChoices(); persistReadings(); persistResetCalendarHistoryIfNeeded() }
         now = Date()
         isRefreshing = false
+        if revision == currentRevision { updateInsights() }
         if revision == currentRevision { publishWidgetSnapshot() }
     }
 

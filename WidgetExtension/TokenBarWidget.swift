@@ -55,7 +55,8 @@ enum TokenBarWidgetTimeline {
         let urgency = snapshot.urgencyBoundaryDates(after: now, before: nextRead)
         let ranking = snapshot.accounts.filter { $0.isWithinRankingGrace(at: now) }
             .compactMap(\.rankingExpiresAt).filter { $0 > now }
-        var dates = Set([now] + freshness + urgency + ranking)
+        let cardExpirations = snapshot.resetCardBoundaryDates(after: now)
+        var dates = Set([now] + freshness + urgency + ranking + cardExpirations)
         let lastFresh = min(nextRead, liveAccounts.compactMap(\.freshUntil).max() ?? now)
         var tick = Date(timeIntervalSince1970: (floor(now.timeIntervalSince1970 / 60) + 1) * 60)
         while tick < lastFresh {

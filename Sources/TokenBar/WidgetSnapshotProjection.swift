@@ -46,6 +46,7 @@ extension AppStore {
 
         var projected: [(metric: TokenBarWidgetMetric, selected: Bool)] = []
         var resetCards: Int?
+        var resetCardExpirations: [Date]?
         var urgencyWindow: QuotaUrgencyWindow?
         if let reading, observed != nil {
             let isCursor = account.menuAgentPrefix == "Cursor"
@@ -83,8 +84,10 @@ extension AppStore {
                 let value = reading.unlimitedCredits ? "∞" : Self.widgetNumber(reading.credits!, digits: 2) + " 点"
                 projected.append((TokenBarWidgetMetric(id: "credits", label: "剩余点数", value: value, remainingPercent: nil), selected))
             }
-            if let count = reading.resetCardsAvailable, (0...TokenBarWidgetConstants.maximumResetCards).contains(count) {
+            let cardAvailability = ResetCardAvailability(reading: reading, at: date)
+            if let count = cardAvailability.availableCount {
                 resetCards = count
+                resetCardExpirations = cardAvailability.pendingExpirations.isEmpty ? nil : Array(cardAvailability.pendingExpirations.prefix(100))
             }
         }
         let ordered = projected.filter(\.selected) + projected.filter { !$0.selected }
@@ -97,7 +100,8 @@ extension AppStore {
         return TokenBarWidgetAccount(id: account.id, email: AccountEmail.validated(accountEmail(account)), provider: provider, plan: plan,
                                      status: status, observedAt: observed, freshUntil: freshUntil,
                                      metrics: metrics, resetCards: resetCards, urgencyWindow: urgencyWindow,
-                                     rankingObservedAt: rankingObserved, rankingObservedAtPresent: true)
+                                     rankingObservedAt: rankingObserved, rankingObservedAtPresent: true,
+                                     resetCardExpirations: resetCardExpirations)
     }
 
     private static func widgetDate(_ date: Date) -> Bool {

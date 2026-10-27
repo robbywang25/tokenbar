@@ -6,12 +6,14 @@ struct QuotaTrendView: View {
     let window: QuotaWindow
     let reading: AccountReading
     let now: Date
+    var expectedRange: QuotaHistoryRange? = nil
 
     var body: some View {
-        let analysis = window.usageTrend?.analysis(window: window, reading: reading, now: now)
+        let selectedTrend = window.usageTrend.flatMap { trend in expectedRange == nil || trend.range == expectedRange ? trend : nil }
+        let analysis = selectedTrend?.analysis(window: window, reading: reading, now: now)
         let pace = analysis?.pace ?? QuotaUsageAnalysis.cyclePace(window: window, reading: reading, now: now)
         VStack(alignment: .leading, spacing: 7) {
-            if let trend = window.usageTrend, let analysis, !analysis.points.isEmpty {
+            if let trend = selectedTrend, let analysis, !analysis.points.isEmpty {
                 history(trend, analysis: analysis)
             }
             if let pace {
@@ -48,9 +50,9 @@ struct QuotaTrendView: View {
             .accessibilityLabel(chartDescription(trend, analysis: analysis, stale: stale))
 
             HStack {
-                Text(trend.from, format: .dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+                Text(axisDate(trend.from, trend: trend))
                 Spacer(minLength: 4)
-                Text(trend.to, format: .dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+                Text(axisDate(trend.to, trend: trend))
             }
             .monospacedDigit().foregroundStyle(.tertiary)
 
@@ -100,6 +102,10 @@ struct QuotaTrendView: View {
 
     private func number(_ value: Double, digits: Int = 1) -> String {
         value.formatted(.number.precision(.fractionLength(0...digits)))
+    }
+
+    private func axisDate(_ date: Date, trend: QuotaUsageTrend) -> String {
+        trend.range == .hour ? date.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)) : date.formatted(.dateTime.month().day().hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
     }
 }
 

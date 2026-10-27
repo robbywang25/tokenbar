@@ -9,6 +9,20 @@ final class ExpiryNoticeController {
     var isVisible: Bool { panel?.isVisible == true }
 
     func show(_ notice: ExpiryNotice, below anchor: NSRect, on screen: NSScreen) {
+        show(AnyView(ExpiryNoticeView(notice: notice)), below: anchor, on: screen)
+    }
+
+    func show(title: String, message: String, below anchor: NSRect, on screen: NSScreen) {
+        let content = VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.system(size: 12, weight: .semibold)).lineLimit(2).truncationMode(.middle)
+            Text(message).font(.system(size: 11)).lineLimit(2)
+        }
+        .frame(width: 288, height: 68, alignment: .leading).padding(10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        show(AnyView(content), below: anchor, on: screen)
+    }
+
+    private func show(_ content: AnyView, below anchor: NSRect, on screen: NSScreen) {
         dismissImmediately()
         let size = NSSize(width: 318, height: 88)
         let margin: CGFloat = 12
@@ -23,7 +37,7 @@ final class ExpiryNoticeController {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.ignoresMouseEvents = true
-        panel.contentView = NSHostingView(rootView: ExpiryNoticeView(notice: notice))
+        panel.contentView = NSHostingView(rootView: content)
         panel.alphaValue = 0
         self.panel = panel
         panel.orderFrontRegardless()

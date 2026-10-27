@@ -56,6 +56,12 @@ public struct TokenBarWidgetSnapshot: Codable, Equatable, Sendable {
         }
         return Array(Set(dates)).sorted()
     }
+
+    /// Exact deadlines remain scheduled if the host stops or WidgetKit delays
+    /// the next read. Equal timestamps are one entry but deduct separate cards.
+    public func resetCardBoundaryDates(after: Date) -> [Date] {
+        Array(Set(accounts.flatMap { $0.resetCardExpirations ?? [] }.filter { $0 > after })).sorted()
+    }
 }
 
 public struct TokenBarWidgetAccount: Codable, Equatable, Identifiable, Sendable {
@@ -68,6 +74,9 @@ public struct TokenBarWidgetAccount: Codable, Equatable, Identifiable, Sendable 
     public var freshUntil: Date?
     public var metrics: [TokenBarWidgetMetric]
     public var resetCards: Int? = nil
+    // resetCards is adjusted at generatedAt. These contain only still-future
+    // available-card expirations, so each deduction happens exactly once.
+    public var resetCardExpirations: [Date]? = nil
     public var urgencyWindow: QuotaUrgencyWindow? = nil
     public var rankingObservedAt: Date? = nil
     // New hosts set this even when the required source time is invalid. Absence
@@ -77,7 +86,7 @@ public struct TokenBarWidgetAccount: Codable, Equatable, Identifiable, Sendable 
     public init(id: UUID, email: String?, provider: String, plan: String?, status: TokenBarWidgetStatus,
                 observedAt: Date?, freshUntil: Date?, metrics: [TokenBarWidgetMetric], resetCards: Int? = nil,
                 urgencyWindow: QuotaUrgencyWindow? = nil, rankingObservedAt: Date? = nil,
-                rankingObservedAtPresent: Bool? = nil) {
+                rankingObservedAtPresent: Bool? = nil, resetCardExpirations: [Date]? = nil) {
         self.id = id
         self.email = email
         self.provider = provider
@@ -87,6 +96,7 @@ public struct TokenBarWidgetAccount: Codable, Equatable, Identifiable, Sendable 
         self.freshUntil = freshUntil
         self.metrics = metrics
         self.resetCards = resetCards
+        self.resetCardExpirations = resetCardExpirations
         self.urgencyWindow = urgencyWindow
         self.rankingObservedAt = rankingObservedAt
         self.rankingObservedAtPresent = rankingObservedAtPresent
@@ -144,8 +154,10 @@ public struct TokenBarWidgetAccount: Codable, Equatable, Identifiable, Sendable 
     }
 
     public func resetCardsLabel(at now: Date) -> String? {
-        guard observedAt != nil, let resetCards, (0...TokenBarWidgetConstants.maximumResetCards).contains(resetCards) else { return nil }
-        return (isFresh(at: now) ? "重置卡 " : "上次重置卡 ") + String(resetCards)
+        guard observedAt != nil,
+              let count = TokenBarResetCardCount.available(reportedCount: resetCards,
+                    knownAvailableExpirations: resetCardExpirations ?? [], at: now) else { return nil }
+        return (isFresh(at: now) ? "重置卡 " : "上次重置卡 ") + String(count)
     }
 
     /// A host write cannot extend a provider observation's lifetime. The widget
@@ -200,6 +212,12 @@ public extension TokenBarWidgetSnapshot {
                   Set(account.metrics.map(\.id)).count == account.metrics.count else { throw TokenBarWidgetSnapshotError.invalidSnapshot }
             if let until = account.freshUntil {
                 guard let observed = account.observedAt, until <= observed.addingTimeInterval(120) else { throw TokenBarWidgetSnapshotError.invalidSnapshot }
+            }
+            if let expirations = account.resetCardExpirations {
+                guard let count = account.resetCards, expirations.count <= min(100, count),
+                      expirations.allSatisfy({ Self.validDate($0) && $0 > generatedAt }) else {
+                    throw TokenBarWidgetSnapshotError.invalidSnapshot
+                }
             }
             let rankingAnchor = account.rankingObservedAtPresent == true ? account.rankingObservedAt : account.rankingObservedAt ?? account.observedAt
             if let ranking = rankingAnchor {

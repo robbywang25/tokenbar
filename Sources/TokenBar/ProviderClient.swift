@@ -20,7 +20,7 @@ struct ProviderClient {
         self.sshReader = sshReader
     }
 
-    func fetch(_ config: AccountConfig) async throws -> AccountReading {
+    func fetch(_ config: AccountConfig, range: QuotaHistoryRange = .hour) async throws -> AccountReading {
         switch (config.provider, config.method) {
         case (.codex, .localFile), (.codex, .keychain):
             let auth = try credential(config)
@@ -68,15 +68,46 @@ struct ProviderClient {
             return reading
         case (.snapshot, .snapshotFile), (.snapshot, .snapshotURL), (.snapshot, .snapshotSSH):
             let (data, source) = try await snapshotDocument(config)
-            return try Self.parseSnapshot(data, sourceAccountID: config.sourceAccountID, source: source, at: now())
+            let reading = try Self.parseSnapshot(data, sourceAccountID: config.sourceAccountID, source: source, at: now())
+            let root = try Self.object(data)
+            let row = (root["accounts"] as? [[String: Any]])?.first(where: {
+                config.sourceAccountID.isEmpty || Self.accountID($0) == config.sourceAccountID
+            }) ?? root
+            guard let id = Self.accountID(row) else { return reading }
+            let selected = SnapshotCatalog(entries: [.init(id: id, serviceLabel: config.displayService, reading: reading)])
+            return try await rangedHistory(selected, config: config, data: data, source: source, range: range).entries[0].reading
         default: throw ProviderError.invalidConfiguration
         }
     }
 
-    func fetchCatalog(_ config: AccountConfig) async throws -> SnapshotCatalog {
+    func fetchCatalog(_ config: AccountConfig, range: QuotaHistoryRange = .hour) async throws -> SnapshotCatalog {
         guard config.provider == .snapshot else { throw ProviderError.invalidConfiguration }
         let (data, source) = try await snapshotDocument(config)
-        return try SnapshotCatalog.parse(data, source: source, at: now())
+        let catalog = try SnapshotCatalog.parse(data, source: source, at: now())
+        return try await rangedHistory(catalog, config: config, data: data, source: source, range: range)
+    }
+
+    private func rangedHistory(_ catalog: SnapshotCatalog, config: AccountConfig, data: Data, source: String,
+                               range: QuotaHistoryRange) async throws -> SnapshotCatalog {
+        guard range != .hour, let root = try? Self.object(data),
+              (root["historyRange"] as? String ?? "1h") == "1h",
+              (root["historyRanges"] as? [String])?.contains(range.rawValue) == true,
+              [.snapshotFile, .snapshotSSH].contains(config.method) else { return catalog }
+        // Only an explicit capability enables a fixed sibling. No payload can
+        // choose an arbitrary path, URL, or command. Current balances stay in
+        // the primary document; the sibling supplies matching history only.
+        var sibling = config
+        sibling.location += ".range-" + range.rawValue + ".json"
+        if config.method == .snapshotFile {
+            for file in [config.location, sibling.location] {
+                let url = URL(fileURLWithPath: NSString(string: file).expandingTildeInPath)
+                guard (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == false else { return catalog }
+            }
+        }
+        guard let (historyData, _) = try? await snapshotDocument(sibling),
+              let historyRoot = try? Self.object(historyData), historyRoot["historyRange"] as? String == range.rawValue,
+              let history = try? SnapshotCatalog.parse(historyData, source: source, at: now()) else { return catalog }
+        return catalog.mergingHistory(history, range: range)
     }
 
     private func snapshotDocument(_ config: AccountConfig) async throws -> (Data, String) {
@@ -254,11 +285,19 @@ struct ProviderClient {
         }
         applyCredits(account["credits"], to: &result)
         applyResetCards(account["resetCredits"], to: &result)
+        if let product = account["product"] as? String, ["codex", "claude", "today-cn", "today-global"].contains(product) {
+            result.reportedResetCards = ReportedResetCards.parse(account["reportedResetCredits"])
+        }
         let hasQuota = !result.windows.isEmpty || result.credits != nil || result.unlimitedCredits || result.resetCardsAvailable != nil
         if result.lastSuccessAt == nil && (status == .connected || (status == .stale && hasQuota)) {
             result.lastSuccessAt = date(root["collectedAt"])
         }
-        if status == .connected, result.windows.isEmpty, result.credits == nil, !result.unlimitedCredits, result.resetCardsAvailable == nil { throw ProviderError.invalidData }
+        if let product = account["product"] as? String,
+           product.range(of: "\\A[a-z][a-z0-9_-]{0,63}\\z", options: .regularExpression) != nil { result.product = product }
+        if [.connected, .stale].contains(status) {
+            result.usageMetrics = UsageMetric.parse(account["usageMetrics"], checkedAt: checked, lastSuccessAt: result.lastSuccessAt)
+        }
+        if status == .connected, !hasQuota, !result.hasUsageMetrics, result.reportedResetCards == nil { throw ProviderError.invalidData }
         let profile = account["profile"] as? [String: Any]
         result.name = safeName(profile?["name"])
         result.email = safeEmail(profile?["email"])
@@ -440,7 +479,12 @@ struct ProviderClient {
     private static func cards(_ values: [[String: Any]]) -> [ResetCard] {
         values.prefix(100).map { value in
             let status = value["status"] as? String ?? "unknown"
-            return ResetCard(status: ["available", "redeemed", "expired", "redeeming"].contains(status) ? status : "unknown", expiresAt: date(value["expiresAt"] ?? value["expires_at"]))
+            let rawType = value["resetType"] as? String ?? value["reset_type"] as? String
+            let resetType = rawType.flatMap { ["full", "five_hour", "weekly"].contains($0) ? $0 : nil }
+            return ResetCard(status: ["available", "redeemed", "expired", "redeeming"].contains(status) ? status : "unknown",
+                             expiresAt: date(value["expiresAt"] ?? value["expires_at"]),
+                             startsAt: date(value["startsAt"] ?? value["starts_at"]),
+                             grantedAt: date(value["grantedAt"] ?? value["granted_at"]), resetType: resetType)
         }
     }
     static func identity(provider: String, accountID: String) -> String {

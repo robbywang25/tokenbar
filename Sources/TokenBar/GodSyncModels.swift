@@ -126,6 +126,10 @@ enum GodSyncProjection {
         // Trends are fetched from the authoritative source on each device.
         // Do not expand the deployed strict sync schema or repeatedly upload history.
         var portable = reading
+        portable.product = nil
+        portable.usageMetrics = nil
+        portable.reportedResetCards = nil
+        portable.resetCards = portable.resetCards.map { ResetCard(status: $0.status, expiresAt: $0.expiresAt) }
         if ["no_usage_data", "unsupported_client"].contains(portable.reason) { portable.reason = nil }
         portable.windows = portable.windows.map { window in
             var window = window; window.usageTrend = nil; return window

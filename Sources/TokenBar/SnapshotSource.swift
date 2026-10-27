@@ -101,3 +101,28 @@ struct SnapshotCatalog {
         return String(id.prefix(64))
     }
 }
+
+extension SnapshotCatalog {
+    /// Optional ranged history must belong to the same verified account epoch
+    /// and exact quota definition. It never changes balances or source freshness.
+    func mergingHistory(_ other: SnapshotCatalog, range: QuotaHistoryRange) -> SnapshotCatalog {
+        let byID = Dictionary(other.entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return SnapshotCatalog(entries: entries.map { entry in
+            var result = entry
+            guard let candidate = byID[entry.id], let epoch = entry.reading.resetHistoryIdentity,
+                  epoch == candidate.reading.resetHistoryIdentity,
+                  entry.reading.product == candidate.reading.product,
+                  entry.reading.email == candidate.reading.email,
+                  entry.reading.lastSuccessAt == candidate.reading.lastSuccessAt else { return result }
+            result.reading.windows = result.reading.windows.map { window in
+                guard let match = candidate.reading.windows.first(where: { $0.id == window.id }),
+                      match.group == window.group, match.model == window.model, match.unit == window.unit,
+                      match.label == window.label, match.startsAt == window.startsAt, match.resetsAt == window.resetsAt,
+                      match.remainingPercent == window.remainingPercent, match.unlimited == window.unlimited,
+                      match.usageTrend?.range == range else { return window }
+                var window = window; window.usageTrend = match.usageTrend; return window
+            }
+            return result
+        })
+    }
+}

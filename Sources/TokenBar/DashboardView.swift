@@ -2,12 +2,12 @@ import SwiftUI
 import AppKit
 
 enum DashboardSection: String {
-    case accounts, calendar
+    case accounts, calendar, analysis
 
     func panelSize(available: CGSize = NSScreen.main?.visibleFrame.size ?? CGSize(width: 1440, height: 900)) -> CGSize {
         switch self {
         case .accounts: return CGSize(width: 440, height: 620)
-        case .calendar: return CGSize(width: min(980, available.width - 40), height: min(800, available.height - 50))
+        case .calendar, .analysis: return CGSize(width: min(980, available.width - 40), height: min(800, available.height - 50))
         }
     }
 }
@@ -36,6 +36,7 @@ struct DashboardView: View {
             Picker("查看内容", selection: $selectedTab) {
                 Text("账号额度").tag(DashboardSection.accounts)
                 Text("重置日历").tag(DashboardSection.calendar)
+                Text("用量分析").tag(DashboardSection.analysis)
             }
             .pickerStyle(.segmented).labelsHidden()
             .padding(.horizontal, 16).padding(.bottom, 10)
@@ -55,10 +56,17 @@ struct DashboardView: View {
                     if showingSettings { settings }
                     if selectedTab == .calendar {
                         ResetCalendarView(store: store, selectedDate: $calendarDate)
+                    } else if selectedTab == .analysis {
+                        QuotaAnalysisView(store: store)
                     } else if store.accounts.isEmpty {
                         emptyState
                     } else {
-                        ForEach(store.orderedAccounts) { account in
+                        QuotaInsightsView(store: store)
+                        if store.visibleDashboardAccounts.isEmpty {
+                            Text(store.insightPreferences.filter == .favorites ? "还没有关注账号。" : "当前没有需要处理的账号。")
+                                .foregroundStyle(.secondary).padding(.vertical, 20)
+                        }
+                        ForEach(store.visibleDashboardAccounts) { account in
                             accountCard(account)
                         }
                     }
@@ -149,6 +157,7 @@ struct DashboardView: View {
         let identityHelp = store.accountIdentityHelp(account)
         let service = serviceSummary(account, reading: reading)
         return VStack(alignment: .leading, spacing: expanded ? 12 : 8) {
+            HStack(alignment: .top, spacing: 8) {
             Button {
                 if expanded { expandedAccounts.remove(account.id) }
                 else { expandedAccounts.insert(account.id) }
@@ -193,10 +202,16 @@ struct DashboardView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("\(identity)，\(service)，\(expanded ? "收起" : "展开")账号详情")
             .accessibilityHint(identityHelp)
+            Button { store.toggleFavorite(account) } label: {
+                Image(systemName: store.insightPreferences.favorites.contains(account.id) ? "star.fill" : "star")
+                    .foregroundStyle(store.insightPreferences.favorites.contains(account.id) ? Color.orange : .secondary)
+            }
+            .buttonStyle(.plain).accessibilityLabel(store.insightPreferences.favorites.contains(account.id) ? "取消关注账号" : "关注账号")
+            }
 
             if let reading {
                 if expanded {
-                    if reading.visibleWindows.isEmpty && !reading.hasVisibleSupplementalQuota {
+                    if reading.visibleWindows.isEmpty && !reading.hasVisibleSupplementalQuota && !reading.hasUsageMetrics {
                         Text(fresh ? "暂无可显示额度" : "当前未知")
                             .font(.subheadline).foregroundStyle(.secondary)
                     } else if !reading.visibleWindows.isEmpty {
@@ -204,12 +219,13 @@ struct DashboardView: View {
                             ForEach(reading.visibleWindows) { window in quotaRow(window, reading: reading, fresh: fresh) }
                         }
                     }
+                    if reading.hasUsageMetrics { UsageMetricsView(reading: reading, now: store.now, expanded: true) }
                     if reading.credits != nil || reading.unlimitedCredits || reading.resetCardsAvailable != nil {
                         HStack(spacing: 14) {
                             if reading.credits != nil || reading.unlimitedCredits {
                                 smallMetric("点数", value: reading.unlimitedCredits ? "不限量" : formatted(reading.credits), fresh: fresh)
                             }
-                            if let count = reading.resetCardsAvailable {
+                            if let count = ResetCardAvailability(reading: reading, at: store.now).availableCount {
                                 smallMetric("重置卡", value: "\(count) 张", fresh: fresh)
                             }
                             Spacer(minLength: 0)
@@ -253,9 +269,13 @@ struct DashboardView: View {
         let metrics = compactMetrics(reading)
         return VStack(alignment: .leading, spacing: 7) {
             if metrics.isEmpty {
+                if reading.hasUsageMetrics {
+                    UsageMetricsView(reading: reading, now: store.now)
+                } else if ReportedResetCards.forDisplay(reading: reading) == nil {
                 let notice = fresh ? "暂无可显示额度" : (reading.detail.isEmpty ? reading.displayStatus(at: store.now).title : reading.detail)
                 Text(notice).font(.system(size: 11)).foregroundStyle(.secondary)
                     .lineLimit(2).help(notice).fixedSize(horizontal: false, vertical: true)
+                }
             } else {
                 MetricFlowLayout(horizontalSpacing: 12, verticalSpacing: 6) {
                     ForEach(metrics) { metric in
@@ -269,6 +289,9 @@ struct DashboardView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if let report = ReportedResetCards.forDisplay(reading: reading) {
+                reportedResetCardSummary(report)
             }
             if fresh, let primary = reading.visibleWindows.first(where: { $0.group == "default" && $0.remainingPercent != nil }),
                let percent = primary.remainingPercent {
@@ -292,7 +315,7 @@ struct DashboardView: View {
         if reading.credits != nil || reading.unlimitedCredits {
             result.append(CompactMetric(id: "credits", label: "点数", value: reading.unlimitedCredits ? "不限量" : formatted(reading.credits)))
         }
-        if let count = reading.resetCardsAvailable {
+        if let count = ResetCardAvailability(reading: reading, at: store.now).availableCount {
             result.append(CompactMetric(id: "reset-cards", label: "重置卡", value: "\(count)张"))
         }
         return result
@@ -358,7 +381,7 @@ struct DashboardView: View {
                 }
             }
             .font(.system(size: 10)).foregroundStyle(.secondary)
-            QuotaTrendView(window: window, reading: reading, now: store.now)
+            QuotaTrendView(window: window, reading: reading, now: store.now, expectedRange: store.trendRange)
         }
     }
 
@@ -384,20 +407,18 @@ struct DashboardView: View {
             if fresh, !reading.detail.isEmpty {
                 Text(reading.detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            if !reading.resetCards.isEmpty {
-                ForEach(Array(reading.resetCards.enumerated()), id: \.offset) { index, card in
-                    HStack(alignment: .top) {
-                        Label("重置卡 \(index + 1)", systemImage: "ticket")
-                        Spacer()
-                        VStack(alignment: .trailing, spacing: 2) {
-                            Text(resetCardStatus(card.status))
-                            if let expiry = card.expiresAt {
-                                Text("\(expiry.formatted(date: .abbreviated, time: .shortened)) 到期")
-                            }
-                        }
-                    }
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            let cardAvailability = ResetCardAvailability(reading: reading, at: store.now)
+            if !cardAvailability.visibleCards.isEmpty {
+                resetCardItems(cardAvailability)
+            }
+            if let report = ReportedResetCards.forDisplay(reading: reading) {
+                reportedResetCardSummary(report)
+                if let observed = report.detailsAt {
+                    Text("\(report.provenance == .officialWeb ? "核验" : "确认")于 \(observed.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+                resetCardItems(report.availability(at: store.now))
             }
             HStack {
                 Text("检查于 \(reading.checkedAt.formatted(date: .omitted, time: .standard))")
@@ -405,6 +426,39 @@ struct DashboardView: View {
                 Spacer()
                 removeButton(account)
             }
+        }
+    }
+
+    private func reportedResetCardSummary(_ report: ReportedResetCards) -> some View {
+        let count = report.availability(at: store.now).availableCount
+        return Text("重置卡 \(count.map { "\($0) 张" } ?? "数量待确认") · \(report.sourceLabel(at: store.now))")
+            .font(.system(size: 10)).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func resetCardItems(_ availability: ResetCardAvailability) -> some View {
+        ForEach(availability.visibleCards) { item in
+            HStack(alignment: .top, spacing: 8) {
+                Label("\(item.card.displayTitle) \(item.index + 1)", systemImage: "ticket")
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(resetCardStatus(item.card.status))
+                    if let expiry = item.card.expiresAt {
+                        Text("\(expiry.formatted(date: .abbreviated, time: .shortened)) 到期")
+                    } else {
+                        Text("到期时间未提供")
+                    }
+                    if let granted = item.card.grantedAt {
+                        Text("\(granted.formatted(date: .abbreviated, time: .shortened)) 领取")
+                    } else if let starts = item.card.startsAt {
+                        Text("\(starts.formatted(date: .abbreviated, time: .shortened)) 起可用")
+                    }
+                }
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .font(.system(size: 10)).foregroundStyle(.secondary)
+            .accessibilityElement(children: .combine)
         }
     }
 
@@ -621,7 +675,8 @@ struct DashboardView: View {
         case "available", "active", "unused": return "可用"
         case "used", "redeemed": return "已使用"
         case "expired": return "已过期"
-        default: return status
+        case "redeeming": return "使用中"
+        default: return "待确认"
         }
     }
 
