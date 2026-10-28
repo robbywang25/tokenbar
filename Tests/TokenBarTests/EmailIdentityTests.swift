@@ -1,7 +1,37 @@
 import XCTest
+import TokenBarWidgetShared
 @testable import TokenBar
 
 final class EmailIdentityTests: XCTestCase {
+    @MainActor func testLegacyMenuObservationCannotOutliveAnExplicitIdentityEpoch() async throws {
+        let environment = try Fixture()
+        defer { environment.clean() }
+        try environment.write(email: "previous@example.test")
+        let store = environment.store()
+        defer { store.stop() }
+        try await store.connect(environment.account)
+        XCTAssertTrue(store.menuTitle.contains("94"))
+
+        try environment.write(email: nil, status: "needs_auth", epoch: "22222222-2222-4222-8222-222222222222")
+        await store.refresh()
+        let widget = try XCTUnwrap(store.widgetSnapshot()).accounts[0]
+        XCTAssertEqual(widget.status, .needsAuth)
+        XCTAssertNil(widget.email)
+        XCTAssertTrue(widget.metrics.isEmpty)
+        XCTAssertFalse(store.menuTitle.contains("94"), "An unbound legacy balance cannot identify the new epoch.")
+        let menuCache = environment.state.appendingPathComponent("menu-readings.json")
+        XCTAssertFalse(String(decoding: try Data(contentsOf: menuCache), as: UTF8.self).contains("previous@example.test"))
+
+        // A later missing epoch and a restart must not revive the discarded observation.
+        try environment.write(email: nil, status: "needs_auth")
+        await store.refresh()
+        XCTAssertFalse(store.menuTitle.contains("94"))
+        let restarted = environment.store()
+        defer { restarted.stop() }
+        XCTAssertFalse(restarted.menuTitle.contains("94"))
+        XCTAssertTrue(try XCTUnwrap(restarted.widgetSnapshot()).accounts[0].metrics.isEmpty)
+    }
+
     func testEmailValidationNeverAcceptsDisplayNamesOrControls() {
         XCTAssertEqual(AccountEmail.validated(" person@example.com "), "person@example.com")
         for value in ["Personal Name", "Person <person@example.com>", "person@example.com\n", "person\n@example.com", "not-an-email", "", "a@localhost"] {
