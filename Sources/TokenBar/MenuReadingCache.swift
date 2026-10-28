@@ -26,7 +26,9 @@ struct MenuReadingCache: Codable, Equatable {
         guard !Self.blocksFallback(current) else { return false }
         if let old = reading.identityKey, let new = current.identityKey, old != new { return false }
         if let old = AccountEmail.validated(reading.email), let new = AccountEmail.validated(current.email), old != new { return false }
-        if let old = reading.resetHistoryIdentity, let new = current.resetHistoryIdentity, old != new { return false }
+        // A legacy observation without an epoch cannot identify a newly bound
+        // source slot, even when its slot-derived identity key stays the same.
+        if let new = current.resetHistoryIdentity, reading.resetHistoryIdentity != new { return false }
         return true
     }
 
