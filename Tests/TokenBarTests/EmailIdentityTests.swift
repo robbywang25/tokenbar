@@ -74,6 +74,73 @@ final class EmailIdentityTests: XCTestCase {
         XCTAssertNil(restartedAgain.readings[replacement.id])
     }
 
+    @MainActor func testNewEpochWithoutEmailCannotLabelNewHistoryWithPreviousAccount() async throws {
+        for status in ["stale", "needs_auth", "unavailable"] {
+            let environment = try Fixture()
+            defer { environment.clean() }
+            let firstEpoch = "11111111-1111-4111-8111-111111111111"
+            let nextEpoch = "22222222-2222-4222-8222-222222222222"
+            try environment.write(email: "previous@example.test", epoch: firstEpoch)
+            let store = environment.store()
+            defer { store.stop() }
+            try await store.connect(environment.account)
+            let originalIdentity = store.readings[environment.account.id]?.identityKey
+            try environment.write(email: nil, status: status, epoch: nextEpoch)
+            await store.refresh()
+            XCTAssertEqual(store.readings[environment.account.id]?.identityKey, originalIdentity,
+                           "A source slot may retain its key while its account epoch changes.")
+            XCTAssertNil(store.accountEmail(environment.account))
+            XCTAssertFalse(store.menuTooltip.contains("previous@example.test"))
+            if let reading = store.readings[environment.account.id], let window = reading.windows.first {
+                let row = try XCTUnwrap(QuotaAnalysisRow(account: environment.account, reading: reading, window: window,
+                    accountLabel: store.accountIdentityLabel(environment.account), product: "codex"))
+                XCTAssertFalse(QuotaRecapCSV.make(rows: [row], range: .hour, now: Date()).contains("previous@example.test"))
+            }
+            // Clearing the mismatched binding must survive a later response
+            // without an epoch and a restart, rather than just hiding the label.
+            try environment.write(email: nil, status: "needs_auth")
+            await store.refresh()
+            XCTAssertNil(store.accountEmail(environment.account))
+            let restarted = environment.store()
+            defer { restarted.stop() }
+            XCTAssertNil(restarted.accountEmail(environment.account))
+        }
+    }
+
+    @MainActor func testSameEpochKeepsRememberedEmailDuringAuthenticationFailure() async throws {
+        let environment = try Fixture()
+        defer { environment.clean() }
+        let epoch = "11111111-1111-4111-8111-111111111111"
+        try environment.write(email: "same@example.test", epoch: epoch)
+        let store = environment.store()
+        defer { store.stop() }
+        try await store.connect(environment.account)
+        try environment.write(email: nil, status: "needs_auth", epoch: epoch)
+        await store.refresh()
+        XCTAssertEqual(store.accountEmail(environment.account), "same@example.test")
+        let restarted = environment.store()
+        defer { restarted.stop() }
+        XCTAssertEqual(restarted.accountEmail(environment.account), "same@example.test")
+    }
+
+    @MainActor func testLegacyEmailCacheLoadsButCannotIdentifyAnUnboundEpoch() async throws {
+        let environment = try Fixture()
+        defer { environment.clean() }
+        try environment.write(email: "legacy@example.test")
+        let store = environment.store()
+        defer { store.stop() }
+        try await store.connect(environment.account)
+        let cache = environment.state.appendingPathComponent("account-emails.json")
+        XCTAssertFalse(String(decoding: try Data(contentsOf: cache), as: UTF8.self).contains("resetHistoryIdentity"))
+        let restarted = environment.store()
+        defer { restarted.stop() }
+        XCTAssertEqual(restarted.accountEmail(environment.account), "legacy@example.test")
+        try environment.write(email: nil, status: "stale", epoch: "22222222-2222-4222-8222-222222222222")
+        await restarted.refresh()
+        XCTAssertNil(restarted.accountEmail(environment.account))
+        XCTAssertFalse(String(decoding: try Data(contentsOf: cache), as: UTF8.self).contains("legacy@example.test"))
+    }
+
     @MainActor func testNotificationsAndMenusUseEmailWithoutChangingSelectionIDs() async throws {
         let environment = try Fixture()
         defer { environment.clean() }
@@ -106,18 +173,20 @@ final class EmailIdentityTests: XCTestCase {
         }
         func store() -> AppStore { AppStore(directory: state, startTimers: false, defaults: defaults) }
         func clean() { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
-        func write(email: String?, status: String = "connected", identity: String = "stable-account", alert: Bool = false) throws {
+        func write(email: String?, status: String = "connected", identity: String = "stable-account", alert: Bool = false, epoch: String? = nil) throws {
             let now = Date()
             let formatter = ISO8601DateFormatter()
             let profile: [String: Any] = ["name": "Another Hidden Personal Name", "email": email as Any? ?? NSNull()]
-            let account: [String: Any] = [
+            let hasQuota = status == "connected" || status == "stale"
+            var account: [String: Any] = [
                 "id": "example", "status": status, "checkedAt": formatter.string(from: now),
-                "lastSuccessAt": status == "connected" ? formatter.string(from: now) : NSNull(),
+                "lastSuccessAt": hasQuota ? formatter.string(from: now) : NSNull(),
                 "identity": ["provider": "example", "accountID": identity], "profile": profile,
-                "windows": status == "connected" ? [["id": "weekly", "label": "每周", "remainingPercent": 94,
+                "windows": hasQuota ? [["id": "weekly", "label": "每周", "remainingPercent": 94,
                     "startsAt": formatter.string(from: now.addingTimeInterval(-600_000)),
                     "resetsAt": formatter.string(from: now.addingTimeInterval(alert ? 4_800 : 172_800))]] : []
             ]
+            if let epoch { account["resetHistoryIdentity"] = epoch }
             try JSONSerialization.data(withJSONObject: account).write(to: snapshot, options: .atomic)
         }
     }

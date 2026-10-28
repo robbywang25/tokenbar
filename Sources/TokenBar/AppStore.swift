@@ -58,8 +58,10 @@ final class AppStore: ObservableObject {
     private var clock: Timer?
     private var poll: Timer?
     private var revision = 0
+    private var isStopped = false
     private var pendingRangeRefresh = false
     private var blockedQuotaSourceIDs: Set<UUID> = []
+    private var quotaSourceAuthorizationRevisions: [UUID: Int] = [:]
     private var wakeObserver: NSObjectProtocol?
     private var connecting = false
     private var snapshotSourcesReadFailed = false
@@ -103,13 +105,12 @@ final class AppStore: ObservableObject {
         guard let saved = rememberedAccountEmails[account.id],
               saved.sourceSignature == AccountEmail.sourceSignature(account),
               let email = AccountEmail.validated(saved.email) else { return nil }
-        if let currentIdentity = readings[account.id]?.identityKey,
-           let previousIdentity = saved.identityKey, currentIdentity != previousIdentity { return nil }
+        if let reading = readings[account.id], saved.conflicts(with: reading) { return nil }
         return email
     }
 
     func setTrendRange(_ range: QuotaHistoryRange) {
-        guard range != trendRange else { return }
+        guard !isStopped, range != trendRange else { return }
         trendRange = range
         if !isDemo { defaults.set(range.rawValue, forKey: "trendRange.v1") }
         revision += 1
@@ -125,6 +126,7 @@ final class AppStore: ObservableObject {
         } else {
             guard blockedQuotaSourceIDs.insert(sourceID).inserted else { return }
         }
+        quotaSourceAuthorizationRevisions[sourceID, default: 0] += 1
         defaults.set(blockedQuotaSourceIDs.map(\.uuidString), forKey: "blockedQuotaSourceIDs.v1")
         if !allowed { quarantineBlockedQuotaReadings(); publishWidgetSnapshot() }
     }
@@ -245,10 +247,11 @@ final class AppStore: ObservableObject {
             guard let reading = readings[account.id] else { continue }
             if let email = AccountEmail.validated(reading.email) {
                 rememberedAccountEmails[account.id] = RememberedAccountEmail(email: email,
-                    sourceSignature: AccountEmail.sourceSignature(account), identityKey: reading.identityKey)
+                    sourceSignature: AccountEmail.sourceSignature(account), identityKey: reading.identityKey,
+                    resetHistoryIdentity: reading.resetHistoryIdentity)
             } else if reading.status == .connected || reading.reason == "invalid_data" || reading.reason == "duplicate" ||
                         (reading.email != nil) ||
-                        (reading.identityKey != nil && rememberedAccountEmails[account.id]?.identityKey != nil && reading.identityKey != rememberedAccountEmails[account.id]?.identityKey) {
+                        rememberedAccountEmails[account.id]?.conflicts(with: reading) == true {
                 rememberedAccountEmails.removeValue(forKey: account.id)
             }
         }
@@ -537,6 +540,7 @@ final class AppStore: ObservableObject {
     }
 
     func refresh(historyOnly: Bool = false) async {
+        guard !isStopped else { return }
         // Opening the popover or waking the Mac must reclassify cached values
         // immediately, even while an earlier network refresh is still running.
         now = Date()
@@ -544,7 +548,7 @@ final class AppStore: ObservableObject {
         let requestedRange = trendRange
         defer {
             isRefreshing = false
-            if pendingRangeRefresh || requestedRange != trendRange {
+            if !isStopped && (pendingRangeRefresh || requestedRange != trendRange) {
                 pendingRangeRefresh = false
                 Task { await self.refresh(historyOnly: true) }
             }
@@ -556,6 +560,11 @@ final class AppStore: ObservableObject {
         let currentRevision = revision
         await beforeRefresh?()
         guard revision == currentRevision else { isRefreshing = false; return }
+        let authorizations = quotaSourceAuthorizationRevisions
+        func sourceReadIsAuthorized(_ id: UUID) -> Bool {
+            !blockedQuotaSourceIDs.contains(id) &&
+                authorizations[id, default: 0] == quotaSourceAuthorizationRevisions[id, default: 0]
+        }
         let provider = client
         var catalogs: [UUID: SnapshotCatalog] = [:]
         var sourceErrors: [UUID: ProviderError] = [:]
@@ -575,6 +584,11 @@ final class AppStore: ObservableObject {
             }
         }
         guard revision == currentRevision else { isRefreshing = false; return }
+        // Revocation can happen while a source read is suspended. A later
+        // grant does not authorize an earlier response from the old grant.
+        for source in snapshotSources where !sourceReadIsAuthorized(source.id) {
+            catalogs.removeValue(forKey: source.id)
+        }
         reconcileSnapshotAccounts(catalogs)
         let configs = accounts.filter { $0.enabled && (!historyOnly || $0.provider == .snapshot) }
         await withTaskGroup(of: (UUID, AccountReading).self) { group in
@@ -608,6 +622,9 @@ final class AppStore: ObservableObject {
             for config in configs {
                 let id = config.id
                 guard revision == currentRevision, var reading = results[id], accounts.contains(where: { $0.id == id }) else { continue }
+                // The second task group can suspend after catalog discovery;
+                // preserve any quarantine applied while other accounts load.
+                if let sourceID = config.snapshotSourceID, !sourceReadIsAuthorized(sourceID) { continue }
                 if let identity = reading.identityKey, !identities.insert(identity).inserted {
                     reading = AccountReading(status: .notConfigured, checkedAt: Date(), lastSuccessAt: nil, detail: ProviderError.duplicate.message, reason: "duplicate")
                 }
@@ -625,6 +642,7 @@ final class AppStore: ObservableObject {
     /// Source subscriptions are explicit; upgrading never scans unrelated files
     /// or silently expands a manually selected single-account connection.
     func connectSnapshotSource(_ config: AccountConfig, secret: String? = nil) async throws {
+        guard !isStopped else { throw CancellationError() }
         guard !connecting, !snapshotSourcesReadFailed, snapshotSources.count < 30,
               config.provider == .snapshot,
               !accounts.contains(where: { $0.id == config.id }),
@@ -646,6 +664,7 @@ final class AppStore: ObservableObject {
         }
         do {
             _ = try await client.fetchCatalog(config)
+            guard !isStopped else { throw CancellationError() }
             if isDemo { exitDemo() }
             let updated = snapshotSources + [SnapshotSource(connection: config)]
             try save(updated, name: "snapshot-sources.json")
@@ -736,6 +755,7 @@ final class AppStore: ObservableObject {
     }
 
     func connect(_ config: AccountConfig, secret: String? = nil) async throws {
+        guard !isStopped else { throw CancellationError() }
         guard !connecting, accounts.count < 1_000 else { throw ProviderError.invalidConfiguration }
         connecting = true
         defer { connecting = false }
@@ -751,6 +771,7 @@ final class AppStore: ObservableObject {
         }
         do {
             let reading = try await client.fetch(config)
+            guard !isStopped else { throw CancellationError() }
             guard config.provider == .snapshot || reading.status == .connected || reading.status == .stale else {
                 throw reading.status == .needsAuth ? ProviderError.needsAuth : ProviderError.unavailable
             }
@@ -986,6 +1007,8 @@ final class AppStore: ObservableObject {
     }
 
     func stop() {
+        isStopped = true
+        pendingRangeRefresh = false
         revision += 1
         poll?.invalidate(); poll = nil; clock?.invalidate(); clock = nil
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }

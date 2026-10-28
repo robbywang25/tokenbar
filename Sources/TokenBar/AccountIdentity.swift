@@ -23,4 +23,13 @@ struct RememberedAccountEmail: Codable, Equatable {
     var email: String
     var sourceSignature: String
     var identityKey: String?
+    var resetHistoryIdentity: String? = nil
+
+    func conflicts(with reading: AccountReading) -> Bool {
+        if let old = identityKey, let current = reading.identityKey, old != current { return true }
+        // A slot-derived identity key can stay unchanged when its owner changes.
+        // Legacy labels without an epoch cannot identify an explicit new epoch.
+        if let current = reading.resetHistoryIdentity, resetHistoryIdentity != current { return true }
+        return false
+    }
 }
