@@ -72,6 +72,8 @@ struct TokenBarWidgetView: View {
                     Spacer(minLength: 0)
                     metricValue(primary, account: account, prominent: true)
                 }
+                quotaProgress(primary, account: account)
+                    .padding(.vertical, 2)
                 resetTime(primary, account: account, fontSize: 8, compact: false)
                 if metrics.count > 1 {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
@@ -80,6 +82,8 @@ struct TokenBarWidgetView: View {
                         Spacer(minLength: 0)
                         metricValue(metrics[1], account: account, prominent: false)
                     }
+                    quotaProgress(metrics[1], account: account)
+                        .padding(.vertical, 2)
                     resetTime(metrics[1], account: account, fontSize: 8, compact: false)
                 }
             } else {
@@ -98,7 +102,7 @@ struct TokenBarWidgetView: View {
     }
 
     private var accountList: some View {
-        VStack(alignment: .leading, spacing: family == .systemLarge ? 6 : 4) {
+        VStack(alignment: .leading, spacing: family == .systemLarge ? 6 : 2) {
             heading
             ForEach(accounts) { account in
                 accountRow(account, compact: family == .systemMedium)
@@ -109,7 +113,7 @@ struct TokenBarWidgetView: View {
 
     private func accountRow(_ account: TokenBarWidgetAccount, compact: Bool) -> some View {
         let metrics = account.displayMetrics()
-        return VStack(alignment: .leading, spacing: 3) {
+        return VStack(alignment: .leading, spacing: 1) {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(identity(account)).font(.system(size: compact ? 11 : 12, weight: .semibold))
@@ -123,7 +127,7 @@ struct TokenBarWidgetView: View {
                         Text("—").font(.system(size: 20, weight: .medium, design: .rounded)).foregroundStyle(.secondary)
                     } else {
                         ForEach(metrics) { metric in
-                            VStack(alignment: .trailing, spacing: 2) {
+                            VStack(alignment: .trailing, spacing: 1) {
                                 if metric.id == "credits" {
                                     metricValue(metric, account: account, prominent: false)
                                     Text(metric.label).font(.system(size: 8)).foregroundStyle(.secondary).lineLimit(1)
@@ -133,6 +137,7 @@ struct TokenBarWidgetView: View {
                                             .lineLimit(1).minimumScaleFactor(0.8)
                                         metricValue(metric, account: account, prominent: false)
                                     }
+                                    quotaProgress(metric, account: account)
                                     resetTime(metric, account: account, fontSize: 8, compact: true)
                                 }
                             }
@@ -153,6 +158,37 @@ struct TokenBarWidgetView: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilitySummary(account))
+    }
+
+    @ViewBuilder
+    private func quotaProgress(_ metric: TokenBarWidgetMetric, account: TokenBarWidgetAccount) -> some View {
+        if let progress = TokenBarWidgetQuotaProgress(metric: metric, account: account, at: entry.date) {
+            HStack(spacing: 2) {
+                ForEach(0..<TokenBarWidgetQuotaProgress.segmentCount, id: \.self) { segment in
+                    GeometryReader { geometry in
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(Color.primary.opacity(0.12))
+                            .overlay(alignment: .leading) {
+                                Rectangle()
+                                    .fill(progressColor(progress.tone))
+                                    .frame(width: geometry.size.width * progress.fill(in: segment))
+                            }
+                            .clipShape(RoundedRectangle(cornerRadius: 1.5))
+                    }
+                }
+            }
+            .frame(height: family == .systemSmall ? 5 : 4)
+            .accessibilityHidden(true) // The account summary already reads the precise value and freshness.
+        }
+    }
+
+    private func progressColor(_ tone: TokenBarWidgetQuotaProgress.Tone) -> Color {
+        switch tone {
+        case .healthy: return .green
+        case .warning: return .orange
+        case .low: return .red
+        case .historical: return .secondary
+        }
     }
 
     @ViewBuilder
@@ -242,12 +278,13 @@ struct TokenBarWidgetView: View {
         let fresh = account.isFresh(at: entry.date)
         let historical = !fresh && account.observedAt != nil && metric.value != "—"
         let available = fresh || account.observedAt != nil
+        let progress = TokenBarWidgetQuotaProgress(metric: metric, account: account, at: entry.date)
         return (
             Text(historical ? "上次 " : "").font(.system(size: 8))
             + Text(available ? metric.value : "—")
                 .font(.system(size: prominent ? 23 : 13, weight: .semibold, design: .rounded))
         )
-        .foregroundColor(fresh ? valueColor(metric.remainingPercent) : .secondary)
+        .foregroundColor(fresh ? progress.map { progressColor($0.tone) } ?? .primary : .secondary)
         .monospacedDigit().lineLimit(1).minimumScaleFactor(0.75)
     }
 
@@ -266,11 +303,6 @@ struct TokenBarWidgetView: View {
             : observed.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour(.twoDigits(amPM: .omitted)).minute(.twoDigits).locale(Locale(identifier: "en_GB")))
         if account.isFresh(at: entry.date) { return "采集 " + date }
         return (status == .stale ? "旧数据" : status.title) + " · " + date
-    }
-
-    private func valueColor(_ percent: Double?) -> Color {
-        guard let percent else { return .primary }
-        return percent <= 10 ? .red : percent <= 25 ? .orange : .accentColor
     }
 
     private func accessibilitySummary(_ account: TokenBarWidgetAccount) -> String {
