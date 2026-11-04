@@ -35,12 +35,12 @@ public struct AccountDisplayOrder: Codable, Equatable, Sendable {
 
     public static func providerKey(product: String? = nil, provider: String? = nil, sourceID: String = "") -> String {
         let product = product?.lowercased() ?? "", provider = provider?.lowercased() ?? ""
-        if ["gemini-cli", "gemini-web", "gemini-api"].contains(product) || ["google", "gemini", "gemini cli", "gemini web", "gemini api", "antigravity cli"].contains(provider) { return "google" }
+        if ["gemini-cli", "gemini-web", "gemini-api"].contains(product) || ["google", "gemini", "gemini cli", "gemini web", "gemini api", "antigravity cli", "geminicli", "geminiweb", "geminiapi", "ag cli"].contains(provider) { return "google" }
         if ["today-cn", "today-global"].contains(product) || provider.hasPrefix("todayai") { return "today" }
         if product == "cursor" || provider == "cursor" { return "cursor" }
-        if product == "claude" || ["anthropic", "claude", "claude code"].contains(provider) { return "anthropic" }
-        if ["grok", "grok-bot"].contains(product) || ["xai", "x.ai", "grok", "grok build", "grok bot"].contains(provider) { return "xai" }
-        if ["codex", "chatgpt-dots", "chatgpt-chat"].contains(product) || ["openai", "codex", "chatgpt", "openai codex"].contains(provider) { return "openai" }
+        if product == "claude" || ["anthropic", "claude", "claude code", "claudecode"].contains(provider) { return "anthropic" }
+        if ["grok", "grok-bot"].contains(product) || ["xai", "x.ai", "grok", "grok build", "grok bot", "grokbot", "grokbuild"].contains(provider) { return "xai" }
+        if ["codex", "chatgpt-dots", "chatgpt-chat"].contains(product) || ["openai", "codex", "chatgpt", "openai codex", "openaicodex"].contains(provider) { return "openai" }
         // Older local snapshot producers may supply only their stable slot ID.
         let id = Self.sourceID(sourceID)
         if id == "codex" || id.hasPrefix("codex-") || id.hasPrefix("chatgpt-") { return "openai" }

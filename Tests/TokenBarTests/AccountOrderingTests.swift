@@ -23,6 +23,17 @@ final class AccountOrderingTests: XCTestCase {
         XCTAssertEqual(sorted(accounts.reversed()).map(\.sourceAccountID), expected)
     }
 
+    func testLegacyWidgetCompactServiceLabelsResolveToTheSameProvider() {
+        for label in ["Grok", "Grok Bot", "GrokBot", "GrokBuild"] {
+            XCTAssertEqual(AccountDisplayOrder.providerKey(provider: label), "xai")
+        }
+        for label in ["Gemini", "GeminiCLI", "GeminiWeb", "GeminiAPI", "AG CLI"] {
+            XCTAssertEqual(AccountDisplayOrder.providerKey(provider: label), "google")
+        }
+        XCTAssertEqual(AccountDisplayOrder.providerKey(provider: "ClaudeCode"), "anthropic")
+        XCTAssertEqual(AccountDisplayOrder.providerKey(provider: "OpenAICodex"), "openai")
+    }
+
     func testCustomProviderWeightMovesWholeGroupAndConflictsFallBack() {
         var first = account("gemini-web", "Gemini"), second = account("gemini-web-2", "Gemini")
         first.displayOrder = .init(providerKey: "google", providerWeight: 50, accountWeight: 20)
