@@ -10,9 +10,11 @@ extension AppStore {
         // for each window makes a 30-account projection unnecessarily quadratic.
         let selection = selectedMenuMetricIDs
         let selected = Set(availableMenuMetrics.filter { selection.contains($0.id) }.map(\.accountID))
-        let enabled = accounts.filter(\.enabled)
+        let enabled = orderedAccounts.filter(\.enabled)
         let ordered = enabled.filter { selected.contains($0.id) } + enabled.filter { !selected.contains($0.id) }
-        let rows = ordered.prefix(TokenBarWidgetConstants.maximumAccounts).map { account in
+        let chosen = AccountDisplayOrder.sorted(Array(ordered.prefix(TokenBarWidgetConstants.maximumAccounts)),
+            order: { $0.accountDisplayOrder }, stableID: { $0.orderingSourceID })
+        let rows = chosen.map { account in
             widgetAccount(account, at: date, selection: selection)
         }
         return TokenBarWidgetSnapshot(generatedAt: date, accounts: rows)
@@ -101,7 +103,7 @@ extension AppStore {
                                      status: status, observedAt: observed, freshUntil: freshUntil,
                                      metrics: metrics, resetCards: resetCards, urgencyWindow: urgencyWindow,
                                      rankingObservedAt: rankingObserved, rankingObservedAtPresent: true,
-                                     resetCardExpirations: resetCardExpirations)
+                                     resetCardExpirations: resetCardExpirations, displayOrder: account.accountDisplayOrder)
     }
 
     private static func widgetDate(_ date: Date) -> Bool {

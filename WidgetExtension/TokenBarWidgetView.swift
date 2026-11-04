@@ -24,7 +24,8 @@ struct TokenBarWidgetView: View {
     }
 
     private var accounts: [TokenBarWidgetAccount] {
-        Array(entry.snapshot.rankedAccounts(at: entry.date).prefix(family == .systemSmall ? 1 : family == .systemMedium ? 3 : 6))
+        Array((family == .systemSmall ? entry.snapshot.rankedAccounts(at: entry.date) : entry.snapshot.displayOrderedAccounts())
+            .prefix(family == .systemSmall ? 1 : family == .systemMedium ? 3 : 6))
     }
 
     private var emptyState: some View {

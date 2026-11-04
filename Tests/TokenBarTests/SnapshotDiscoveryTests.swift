@@ -27,6 +27,32 @@ final class SnapshotDiscoveryTests: XCTestCase {
         XCTAssertEqual(restored.menuQuotaSelection, selection)
     }
 
+    @MainActor
+    func testMetadataOnlyCloudImportUpdatesOrderingWithoutReplacingIdentityOrReadings() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let now = Date()
+        var original = row("custom-logical-id", service: "Custom channel", at: now)
+        original["product"] = "gemini-web"
+        try f.write([original])
+        let store = f.store(); try await store.connectSnapshotSource(f.connection)
+        let account = try XCTUnwrap(store.accounts.first)
+        let reading = store.readings[account.id]
+        XCTAssertEqual(account.accountDisplayOrder.providerKey, "google")
+        var changed = original
+        changed["displayOrder"] = ["version": 1, "providerKey": "google", "providerWeight": 50, "accountWeight": 10]
+        let data = try JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "accounts": [changed]])
+        try store.importCloudSnapshot(data, sourceID: f.connection.id)
+        let updated = try XCTUnwrap(store.accounts.first)
+        XCTAssertEqual(updated.id, account.id)
+        XCTAssertEqual(updated.sourceAccountID, "custom-logical-id")
+        XCTAssertEqual(updated.accountDisplayOrder.providerWeight, 50)
+        XCTAssertEqual(updated.accountDisplayOrder.accountWeight, 10)
+        XCTAssertEqual(store.readings[account.id]?.windows, reading?.windows)
+        XCTAssertEqual(store.readings[account.id]?.lastSuccessAt, reading?.lastSuccessAt)
+        XCTAssertEqual(store.readings[account.id]?.status, reading?.status)
+        XCTAssertEqual(f.store().accounts.first?.displayOrder, updated.displayOrder)
+    }
+
     func testCatalogAcceptsFutureProvidersAndAdditionalAccountsPreservingUnitsAndAge() throws {
         let old = Date().addingTimeInterval(-600)
         let data = try JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "collectedAt": old.timeIntervalSince1970,
@@ -149,6 +175,20 @@ final class SnapshotDiscoveryTests: XCTestCase {
         XCTAssertEqual(store.accounts.count, 41)
         XCTAssertEqual(Set(store.accounts.map(\.id)).count, 41)
         XCTAssertEqual(store.readings[store.accounts.last!.id]?.email, "other@example.test")
+    }
+
+    @MainActor
+    func testSingleAccountSnapshotAlsoReceivesWeightsAndRetainsThemOnTransportFailure() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        var value = row("gemini-web", service: "Gemini")
+        value["displayOrder"] = ["version": 1, "providerKey": "google", "providerWeight": 50, "accountWeight": 10]
+        try f.write([value])
+        var config = f.connection; config.sourceAccountID = "gemini-web"; config.serviceLabel = "Gemini"
+        let store = f.store(); try await store.connect(config); await store.refresh()
+        XCTAssertEqual(store.accounts.first?.displayOrder?.providerWeight, 50)
+        try Data("invalid-json".utf8).write(to: f.snapshot); await store.refresh()
+        XCTAssertEqual(store.accounts.first?.displayOrder?.providerWeight, 50)
+        XCTAssertEqual(f.store().accounts.first?.displayOrder?.providerWeight, 50)
     }
 
     @MainActor

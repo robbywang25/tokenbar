@@ -8,7 +8,13 @@ TokenBar 把多个 AI Agent 账号的额度放到 macOS 菜单栏和桌面小组
 
 这是围绕个人审美与工作流制作的独立实现：紧凑的账号列表，明确的数据时效，以及接入已有额度后台的本地、HTTPS 和 SSH JSON 来源。菜单栏额度工具已有成熟选择，例如 [CodexBar](https://github.com/steipete/CodexBar) 和 [QuotaBar](https://github.com/QuotaBar/QuotaBar)；本项目没有将这些通用能力宣称为独创。它也与 [Arnie016/TokenBar](https://github.com/Arnie016/TokenBar) 这一同名项目无关联。
 
-0.2.4 小组件版提供 Developer ID 签名并通过 Apple 公证的 Universal DMG、ZIP 和 SHA-256 校验文件，包含 Apple silicon 与 Intel 架构。默认源码构建仍是本机 ad-hoc 菜单栏版，不能代替已验收的分发包。详见 [发布说明](RELEASE.md)。
+0.4.2 小组件版提供 Developer ID 签名并通过 Apple 公证的 Universal DMG、ZIP 和 SHA-256 校验文件，包含 Apple silicon 与 Intel 架构。默认源码构建仍是本机 ad-hoc 菜单栏版，不能代替已验收的分发包。详见 [发布说明](RELEASE.md)。
+
+## 一致的供应商排序
+
+账号总览、菜单选择和中/大尺寸桌面小组件按统一权重排列：OpenAI、Claude、Grok、Cursor、TodayAI、Gemini。先排供应商组，再排组内账号；同一供应商始终相邻，不因余额、刷新时间或卡片高度变化而穿插。小尺寸组件继续选择当前最需要关注的单个账号。
+
+兼容来源可为每个账号提供 `displayOrder: {version: 1, providerKey, providerWeight, accountWeight}`。权重为 0–1000000 的整数，数值越小越靠前；同权重按原始账号 ID 的 ASCII 顺序排列。旧来源缺少字段时使用相同默认顺序；字段无效时回退，供应商权重冲突时整组回退默认值。排序只影响展示，不重写账号身份、来源时间、历史或菜单选择。
 
 ## 独立额度分析
 

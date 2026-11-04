@@ -1,5 +1,6 @@
 import Foundation
 import CoreFoundation
+import TokenBarWidgetShared
 
 struct SnapshotSource: Codable, Identifiable, Equatable {
     var connection: AccountConfig
@@ -33,6 +34,7 @@ struct SnapshotCatalog {
         var id: String
         var serviceLabel: String
         var reading: AccountReading
+        var displayOrder: AccountDisplayOrder? = nil
 
         var shouldDiscover: Bool {
             // Empty slots and unsupported products aren't accounts. An existing
@@ -80,7 +82,10 @@ struct SnapshotCatalog {
                 reading = AccountReading(status: .unavailable, checkedAt: now, lastSuccessAt: nil,
                     detail: ProviderError.invalidData.message, reason: "invalid_data")
             }
-            entries.append(Entry(id: id, serviceLabel: serviceLabel(row, id: id), reading: reading))
+            let label = serviceLabel(row, id: id)
+            let key = AccountDisplayOrder.providerKey(product: row["product"] as? String, provider: row["provider"] as? String ?? label, sourceID: id)
+            let displayOrder = AccountDisplayOrder.parse(row["displayOrder"], providerKey: key, sourceID: id)
+            entries.append(Entry(id: id, serviceLabel: label, reading: reading, displayOrder: displayOrder))
         }
         return SnapshotCatalog(entries: entries)
     }

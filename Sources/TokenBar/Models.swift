@@ -1,4 +1,5 @@
 import Foundation
+import TokenBarWidgetShared
 
 enum ProviderKind: String, Codable, CaseIterable, Identifiable {
     case codex, claude, grok, snapshot
@@ -35,6 +36,7 @@ struct AccountConfig: Codable, Identifiable, Equatable {
     // while each discovered account retains its own stable UI/cache identity.
     var snapshotSourceID: UUID? = nil
     var cloudAccountID: String? = nil
+    var displayOrder: AccountDisplayOrder? = nil
     var displayService: String { serviceLabel ?? provider.title }
 
     var menuAgentPrefix: String {
@@ -230,6 +232,7 @@ struct AccountReading: Codable, Equatable {
     var resetHistory: [QuotaResetRecord]? = nil
     var resetHistoryIdentity: String? = nil
     var product: String? = nil
+    var displayOrder: AccountDisplayOrder? = nil
     // Used requests/tokens in a measured interval, never a remaining allowance.
     var usageMetrics: [UsageMetric]? = nil
     // Dated observations remain separate from native balances and sync records.

@@ -444,19 +444,6 @@ final class AppStore: ObservableObject {
         return availableMenuMetrics.filter { selected.contains($0.id) }
     }
 
-    /// Stable grouping: keep the first-seen service order and account order
-    /// inside each service, without rewriting IDs, stored choices or history.
-    var orderedAccounts: [AccountConfig] {
-        var groups: [[AccountConfig]] = []
-        var positions: [String: Int] = [:]
-        for account in accounts {
-            let key = account.menuAgentPrefix.lowercased()
-            if let index = positions[key] { groups[index].append(account) }
-            else { positions[key] = groups.count; groups.append([account]) }
-        }
-        return groups.flatMap { $0 }
-    }
-
     private func menuReading(for id: UUID) -> (reading: AccountReading, historical: Bool)? {
         guard let account = accounts.first(where: { $0.id == id && $0.enabled }) else { return nil }
         guard account.snapshotSourceID.map(blockedQuotaSourceIDs.contains) != true else { return nil }
@@ -616,6 +603,7 @@ final class AppStore: ObservableObject {
                 }
             }
             let baseline = readings
+            var orderChanged = false
             now = Date()
             var identities = Set(accounts.filter { $0.enabled && historyOnly && $0.provider != .snapshot }
                 .compactMap { readings[$0.id]?.identityKey })
@@ -630,6 +618,15 @@ final class AppStore: ObservableObject {
                 }
                 recordResetHistory(account: config, previous: baseline[id], next: reading)
                 readings[id] = reading
+                if config.provider == .snapshot, let order = reading.displayOrder,
+                   let index = accounts.firstIndex(where: { $0.id == id }), accounts[index].displayOrder != order {
+                    accounts[index].displayOrder = order
+                    orderChanged = true
+                }
+            }
+            if orderChanged {
+                do { try save(accounts, name: "accounts.json") }
+                catch { errorMessage = "账号排序暂未保存，下次刷新会重试。" }
             }
         }
         if revision == currentRevision { lastRefresh = Date(); rememberMenuReadings(); rememberAccountEmails(); rememberMenuChoices(); persistReadings(); persistResetCalendarHistoryIfNeeded() }
@@ -733,6 +730,7 @@ final class AppStore: ObservableObject {
                     // the local account identity and user name while following
                     // channel refinements such as Gemini CLI / Web / API.
                     updated[index].serviceLabel = entry.serviceLabel
+                    updated[index].displayOrder = entry.displayOrder
                 } else if source.discoversAccounts && entry.shouldDiscover {
                     guard updated.count < 1_000 else { errorMessage = "账号数量超过上限，新增账号未能同步。"; return }
                     var account = source.connection
@@ -740,6 +738,7 @@ final class AppStore: ObservableObject {
                     account.sourceAccountID = entry.id
                     account.name = entry.serviceLabel
                     account.serviceLabel = entry.serviceLabel
+                    account.displayOrder = entry.displayOrder
                     account.snapshotSourceID = source.id
                     updated.append(account)
                 }
@@ -1127,7 +1126,9 @@ final class AppStore: ObservableObject {
         let added = catalog.entries.filter { source.discoversAccounts && $0.shouldDiscover && !source.excludedAccountIDs.contains($0.id) }.map(\.id)
         let removed = owned.contains { source.excludedAccountIDs.contains($0.sourceAccountID) }
         if !removed, Set(added).isSubset(of: existing), owned.allSatisfy({ account in
-            catalog.entries.first(where: { $0.id == account.sourceAccountID }).map { readings[account.id] == $0.reading } ?? true
+            catalog.entries.first(where: { $0.id == account.sourceAccountID }).map {
+                readings[account.id] == $0.reading && account.serviceLabel == $0.serviceLabel && account.displayOrder == $0.displayOrder
+            } ?? true
         }) { return }
         revision += 1
         reconcileSnapshotAccounts([sourceID: catalog])

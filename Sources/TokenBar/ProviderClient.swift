@@ -2,6 +2,7 @@ import Foundation
 import CryptoKit
 import CoreFoundation
 import Darwin
+import TokenBarWidgetShared
 
 /// Read-only adapters. Provider response bodies and credentials must never enter logs.
 struct ProviderClient {
@@ -266,6 +267,10 @@ struct ProviderClient {
         if let rawObserved, !(rawObserved is NSNull), observed == nil { throw ProviderError.invalidData }
         let checked = date(account["checkedAt"]) ?? date(root["collectedAt"]) ?? observed ?? now
         var result = AccountReading(status: status, checkedAt: checked, lastSuccessAt: observed)
+        let orderID = accountID(account) ?? sourceAccountID
+        let orderProvider = AccountDisplayOrder.providerKey(product: account["product"] as? String,
+            provider: account["provider"] as? String ?? account["serviceLabel"] as? String, sourceID: orderID)
+        result.displayOrder = AccountDisplayOrder.parse(account["displayOrder"], providerKey: orderProvider, sourceID: orderID)
         if account.keys.contains("sourceCollectedAt") {
             result.sourceCollectedAtPresent = true
             result.sourceCollectedAt = date(account["sourceCollectedAt"])

@@ -49,6 +49,17 @@ public struct TokenBarWidgetSnapshot: Codable, Equatable, Sendable {
         }.map(\.element)
     }
 
+    /// Multi-account overviews use the same supplier order as the main app.
+    /// The single-account widget still uses rankedAccounts for urgent selection.
+    public func displayOrderedAccounts() -> [TokenBarWidgetAccount] {
+        AccountDisplayOrder.sorted(accounts, order: { account in
+            let key = account.displayOrder?.isValid == true ? account.displayOrder!.providerKey :
+                AccountDisplayOrder.providerKey(provider: account.provider)
+            return account.displayOrder?.resolved(providerKey: key, sourceID: "") ??
+                AccountDisplayOrder.fallback(providerKey: key, sourceID: "")
+        }, stableID: { _ in "" })
+    }
+
     public func urgencyBoundaryDates(after: Date, before: Date) -> [Date] {
         let dates = accounts.flatMap { account -> [Date] in
             guard account.isFresh(at: after), let window = account.urgencyWindow, let until = account.freshUntil else { return [] }
@@ -82,11 +93,12 @@ public struct TokenBarWidgetAccount: Codable, Equatable, Identifiable, Sendable 
     // New hosts set this even when the required source time is invalid. Absence
     // identifies a legacy snapshot eligible for the observedAt-only fallback.
     public var rankingObservedAtPresent: Bool? = nil
+    public var displayOrder: AccountDisplayOrder? = nil
 
     public init(id: UUID, email: String?, provider: String, plan: String?, status: TokenBarWidgetStatus,
                 observedAt: Date?, freshUntil: Date?, metrics: [TokenBarWidgetMetric], resetCards: Int? = nil,
                 urgencyWindow: QuotaUrgencyWindow? = nil, rankingObservedAt: Date? = nil,
-                rankingObservedAtPresent: Bool? = nil, resetCardExpirations: [Date]? = nil) {
+                rankingObservedAtPresent: Bool? = nil, resetCardExpirations: [Date]? = nil, displayOrder: AccountDisplayOrder? = nil) {
         self.id = id
         self.email = email
         self.provider = provider
@@ -100,6 +112,7 @@ public struct TokenBarWidgetAccount: Codable, Equatable, Identifiable, Sendable 
         self.urgencyWindow = urgencyWindow
         self.rankingObservedAt = rankingObservedAt
         self.rankingObservedAtPresent = rankingObservedAtPresent
+        self.displayOrder = displayOrder
     }
 
     public func urgency(at now: Date) -> QuotaUrgencyAssessment? {

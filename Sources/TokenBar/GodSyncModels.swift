@@ -127,6 +127,7 @@ enum GodSyncProjection {
         // Do not expand the deployed strict sync schema or repeatedly upload history.
         var portable = reading
         portable.product = nil
+        portable.displayOrder = nil
         portable.usageMetrics = nil
         portable.reportedResetCards = nil
         portable.resetCards = portable.resetCards.map { ResetCard(status: $0.status, expiresAt: $0.expiresAt) }
@@ -150,6 +151,7 @@ enum GodSyncProjection {
         var value: [String: SyncJSON] = ["kind": .string("account"), "accountID": .string(key),
             "source": .string(key.hasPrefix("god:") ? "god" : "local"), "provider": .string(account.provider.rawValue), "serviceLabel": .string(account.displayService)]
         if !account.sourceAccountID.isEmpty { value["sourceAccountID"] = .string(account.sourceAccountID) }
+        value["displayOrder"] = try SyncJSON.encode(account.accountDisplayOrder)
         if let reading { value["reading"] = try Self.reading(reading) }
         return .object(value)
     }
@@ -171,6 +173,7 @@ enum GodSyncProjection {
                 var value = try SyncJSON.encode(window).object!; value["quotaGroup"] = value.removeValue(forKey: "group"); return .object(value)
             })]
         if let service = record["serviceLabel"] { result["serviceLabel"] = service }
+        if let displayOrder = record["displayOrder"] { result["displayOrder"] = displayOrder }
         result["checkedAt"] = .number(reading.checkedAt.timeIntervalSince1970)
         result["lastSuccessAt"] = reading.lastSuccessAt.map { .number($0.timeIntervalSince1970) } ?? .null
         result["sourceCollectedAt"] = result["lastSuccessAt"]

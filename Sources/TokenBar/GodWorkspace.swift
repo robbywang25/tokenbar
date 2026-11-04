@@ -139,7 +139,7 @@ final class GodWorkspace: ObservableObject {
             var records: [String: SyncJSON] = [:]
             for entry in catalog.entries where entry.shouldDiscover {
                 let config = AccountConfig(provider: .snapshot, name: entry.serviceLabel, method: .snapshotFile,
-                    location: "", sourceAccountID: entry.id, serviceLabel: entry.serviceLabel)
+                    location: "", sourceAccountID: entry.id, serviceLabel: entry.serviceLabel, displayOrder: entry.displayOrder)
                 records["a:god:" + entry.id] = try GodSyncProjection.record(account: config, key: "god:" + entry.id, reading: entry.reading)
             }
             canonicalAccounts = records

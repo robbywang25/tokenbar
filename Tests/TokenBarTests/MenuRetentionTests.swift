@@ -17,7 +17,7 @@ final class MenuRetentionTests: XCTestCase {
                 windows: [QuotaWindow(id: "week", label: "每周", remainingPercent: 63)])
             store.setMenuQuota(accountID: account.id, windowID: "week", enabled: true)
         }
-        XCTAssertEqual(store.orderedAccounts.map(\.id), [original[0], original[5], original[1], original[4], original[2], original[3]])
+        XCTAssertEqual(store.orderedAccounts.map(\.id), [original[0], original[5], original[1], original[4], original[3], original[2]])
         XCTAssertEqual(store.availableMenuMetrics.map(\.accountID), store.orderedAccounts.map(\.id))
         XCTAssertEqual(store.accounts.map(\.id), original)
         XCTAssertEqual(store.selectedMenuMetricIDs.count, 6)
