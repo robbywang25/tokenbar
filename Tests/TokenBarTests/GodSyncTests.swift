@@ -167,7 +167,7 @@ final class GodSyncTests: XCTestCase {
         let auth = fixture.auth()
         let opened = OpenedVerificationPages()
         auth.openVerificationPage = { url, _ in opened.urls.append(url) }
-        let page = URL(string: "https://identity.example.test/consent/openid/device-authorization?user_code=TEST-CODE")!
+        let page = URL(string: GodIssuerPolicy.canonical + "/consent/openid/device-authorization?user_code=TEST-CODE")!
 
         XCTAssertTrue(menuPanelDismissesOnFocusLoss(auth))
         XCTAssertFalse(auth.isSigningIn)
@@ -218,8 +218,8 @@ final class GodSyncTests: XCTestCase {
         XCTAssertTrue(menuPanelDismissesOnFocusLoss(auth))
         XCTAssertEqual(flow.deviceGrants, 3)
         XCTAssertFalse(opened.urls.isEmpty)
-        XCTAssertTrue(opened.urls.allSatisfy { $0.host == "identity.example.test" })
-        XCTAssertTrue(flow.hosts.allSatisfy { $0 == "workbench.example.test" || $0 == "identity.example.test" })
+        XCTAssertTrue(opened.urls.allSatisfy { $0.host == "auth.robby.wang" })
+        XCTAssertTrue(flow.hosts.allSatisfy { ["workbench.example.test", "auth.robby.wang", "auth.god.robby.wang"].contains($0) })
     }
 
     @MainActor
@@ -286,7 +286,7 @@ final class GodSyncTests: XCTestCase {
 private final class SyncFixture {
     static let origin = "https://workbench.example.test", ownerID = "11111111-1111-4111-8111-111111111111", otherID = "22222222-2222-4222-8222-222222222222"
     static let historyEpoch = "12345678-1234-1234-1234-123456789abc"
-    static let configuration = GodConfiguration(schemaVersion: 1, issuer: "https://identity.example.test", clientID: "tokenbar-macos", audience: origin + "/api/tokenbar/v1", apiURL: origin + "/api/tokenbar/v1", scopes: ["openid", "offline_access", "god.tokenbar.read", "god.tokenbar.sync"], authentication: "device_authorization", switchSyncDefault: true)
+    static let configuration = GodConfiguration(schemaVersion: 1, issuer: GodIssuerPolicy.legacy, clientID: "tokenbar-macos", audience: origin + "/api/tokenbar/v1", apiURL: origin + "/api/tokenbar/v1", scopes: ["openid", "offline_access", "god.tokenbar.read", "god.tokenbar.sync"], authentication: "device_authorization", switchSyncDefault: true)
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let suite = "GodSyncFixture." + UUID().uuidString
     let userID: String
@@ -398,10 +398,11 @@ private final class DeviceAuthorizationFlow: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         if let host = request.url?.host { requestedHosts.append(host) }
         func json(_ value: Any) -> Data { try! JSONSerialization.data(withJSONObject: value) }
-        let issuer = SyncFixture.configuration.issuer
+        var config = SyncFixture.configuration; config.issuer = GodIssuerPolicy.canonical
+        let issuer = config.issuer
         switch request.url?.path {
         case "/api/tokenbar/v1/configuration":
-            return (200, try! JSONEncoder().encode(SyncFixture.configuration))
+            return (200, try! JSONEncoder().encode(config))
         case "/.well-known/openid-configuration":
             return (200, json(["issuer": issuer, "device_authorization_endpoint": issuer + "/api/oidc/device-authorization", "token_endpoint": issuer + "/api/oidc/token", "revocation_endpoint": issuer + "/api/oidc/revocation",
                                "grant_types_supported": ["urn:ietf:params:oauth:grant-type:device_code"], "token_endpoint_auth_methods_supported": ["none"]]))

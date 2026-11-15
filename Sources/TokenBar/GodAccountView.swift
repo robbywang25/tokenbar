@@ -29,7 +29,15 @@ struct GodAccountView: View {
                     Text("账号资料和历史仍会同步，开关布局保留在此设备。")
                         .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-            } else if authentication.isSigningIn {
+                if authentication.needsAuthenticationMigration && !authentication.isSigningIn {
+                    HStack {
+                        Button("更新登录") { authentication.migrateAuthentication() }
+                        Text("确认完成前保留当前登录。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            if authentication.isSigningIn {
                 Text("在 God 页面完成 Passkey 登录并确认此设备。")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if let code = authentication.userCode {
@@ -44,7 +52,7 @@ struct GodAccountView: View {
                     Button("打开 God 页面") { authentication.openVerification() }.disabled(authentication.verificationURL == nil)
                     Spacer(); Button("取消") { authentication.cancelSignIn() }
                 }
-            } else {
+            } else if authentication.user == nil {
                 if authentication.connection == nil {
                     TextField("工作台 HTTPS 地址", text: $origin).textFieldStyle(.roundedBorder)
                         .accessibilityLabel("God 工作台地址")

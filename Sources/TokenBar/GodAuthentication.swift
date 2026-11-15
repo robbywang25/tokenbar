@@ -9,6 +9,12 @@ struct GodConnection: Codable, Equatable {
     var migrationSourceIDs: [UUID]? = nil
 }
 
+enum GodIssuerPolicy {
+    static let canonical = "https://auth.robby.wang"
+    static let legacy = "https://auth.god.robby.wang"
+    static let accepted: Set<String> = [canonical, legacy]
+}
+
 struct GodConfiguration: Codable, Equatable {
     var schemaVersion: Int
     var issuer: String
@@ -20,7 +26,7 @@ struct GodConfiguration: Codable, Equatable {
     var switchSyncDefault: Bool
     func validate(origin: String) throws {
         _ = try GodHTTP.origin(origin); _ = try GodHTTP.origin(issuer)
-        guard schemaVersion == 1, clientID == "tokenbar-macos", apiURL == origin + "/api/tokenbar/v1", audience == apiURL,
+        guard GodIssuerPolicy.accepted.contains(issuer), schemaVersion == 1, clientID == "tokenbar-macos", apiURL == origin + "/api/tokenbar/v1", audience == apiURL,
               authentication == "device_authorization", switchSyncDefault,
               Set(scopes) == Set(["openid", "offline_access", "god.tokenbar.read", "god.tokenbar.sync"]), scopes.count == 4 else { throw GodError.invalidResponse }
     }
@@ -82,6 +88,7 @@ struct GodSessionStorage {
 final class GodAuthentication: ObservableObject {
     @Published private(set) var user: GodUser?
     @Published private(set) var isSigningIn = false
+    @Published private(set) var isMigratingAuthentication = false
     @Published private(set) var userCode: String?
     @Published private(set) var verificationURL: URL?
     @Published var message: String?
@@ -95,6 +102,7 @@ final class GodAuthentication: ObservableObject {
     private var loginTask: Task<Void, Never>?
     private var refreshTask: Task<GodToken, Error>?
     private var generation = 0
+    private var loginGeneration = 0
     /// Production opens the verification page in the preferred browser. Tests
     /// replace this so a synthetic grant never launches a browser.
     var openVerificationPage: (URL, String?) -> Void = GodAuthentication.openInWorkspace
@@ -109,6 +117,7 @@ final class GodAuthentication: ObservableObject {
         }
     }
     var hasSession: Bool { user != nil && token != nil }
+    var needsAuthenticationMigration: Bool { hasSession && token?.configuration.issuer == GodIssuerPolicy.legacy }
     private var keychainAccount: String? { connection.map { Self.digest($0.origin) } }
     nonisolated static func digest(_ value: String) -> String { SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined() }
 
@@ -145,27 +154,39 @@ final class GodAuthentication: ObservableObject {
 
     func signIn() {
         guard !isSigningIn, user == nil, connection != nil else { return }
-        generation += 1; let run = generation
-        isSigningIn = true; message = nil
+        beginSignIn(expectedUserID: nil)
+    }
+
+    /// Keep the working session until a new-origin grant belongs to the same
+    /// God identity and has been durably saved. No refresh token crosses issuers.
+    func migrateAuthentication() {
+        guard !isSigningIn, needsAuthenticationMigration, let user else { return }
+        beginSignIn(expectedUserID: user.id)
+    }
+
+    private func beginSignIn(expectedUserID: String?) {
+        loginGeneration += 1; let run = loginGeneration
+        isSigningIn = true; isMigratingAuthentication = expectedUserID != nil; message = nil
         loginTask = Task {
-            defer { if generation == run { isSigningIn = false; userCode = nil; verificationURL = nil } }
-            do { try await performSignIn(run: run) }
+            defer { if loginGeneration == run { isSigningIn = false; isMigratingAuthentication = false; userCode = nil; verificationURL = nil } }
+            do { try await performSignIn(run: run, expectedUserID: expectedUserID) }
             catch is CancellationError { }
-            catch { if generation == run { message = (error as? GodError ?? .unavailable).localizedDescription } }
+            catch { if loginGeneration == run { message = (error as? GodError ?? .unavailable).localizedDescription } }
         }
     }
 
-    private func performSignIn(run: Int) async throws {
+    private func performSignIn(run: Int, expectedUserID: String?) async throws {
         guard let connection else { throw GodError.signedOut }
         let response = try await http.send(URLRequest(url: URL(string: connection.origin + "/api/tokenbar/v1/configuration")!), limit: 32768)
         guard response.status == 200 else { throw GodError.unavailable }
         let config = try JSONDecoder().decode(GodConfiguration.self, from: response.data)
         try config.validate(origin: connection.origin)
+        guard config.issuer == GodIssuerPolicy.canonical else { throw GodError.unavailable }
         let discovery = try await discover(config)
         let responseGrant = try await post(discovery.device, ["client_id": config.clientID, "scope": config.scopes.joined(separator: " "), "audience": config.audience])
         guard responseGrant.status == 200 else { throw GodError.denied }
         let grant = try JSONDecoder().decode(GodDeviceGrant.self, from: responseGrant.data); try grant.validate(issuer: config.issuer)
-        try check(run)
+        try checkLogin(run)
         userCode = grant.user_code
         verificationURL = URL(string: grant.verification_uri_complete ?? grant.verification_uri)
         openVerification()
@@ -173,23 +194,34 @@ final class GodAuthentication: ObservableObject {
         var interval = max(5, grant.interval ?? 5)
         while true {
             try await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
-            try check(run)
+            try checkLogin(run)
             guard ProcessInfo.processInfo.systemUptime < deadline else { throw GodError.expired }
             let result: GodHTTPResponse
             do { result = try await post(discovery.token, ["grant_type": "urn:ietf:params:oauth:grant-type:device_code", "device_code": grant.device_code,
                                                           "client_id": config.clientID, "audience": config.audience]) }
-            catch { try check(run); interval = min(900, interval * 2); continue }
+            catch { try checkLogin(run); interval = min(900, interval * 2); continue }
             if result.status == 200 {
                 var next = try decodeToken(result.data, configuration: config)
-                guard ProcessInfo.processInfo.systemUptime < deadline, generation == run else { await revoke(next); throw GodError.expired }
-                token = next
+                guard ProcessInfo.processInfo.systemUptime < deadline, loginGeneration == run else { await discard(next); throw GodError.expired }
                 do {
-                    let verified = try await verifyUser(); try check(run)
-                    next.user = verified; try persist(next); token = next; user = verified
-                } catch { token = nil; user = nil; await revoke(next); throw error }
+                    let verified = try await verifyUser(using: next); try checkLogin(run)
+                    if let expectedUserID {
+                        guard verified.id == expectedUserID, user?.id == expectedUserID else { throw GodError.denied }
+                    }
+                    // Let any in-flight old-issuer rotation finish before taking
+                    // the token we will revoke after the atomic replacement.
+                    if let pendingRefresh = refreshTask { _ = try? await pendingRefresh.value }
+                    try checkLogin(run)
+                    if let expectedUserID { guard user?.id == expectedUserID else { throw GodError.denied } }
+                    let previous = token
+                    next.user = verified; try persist(next)
+                    generation += 1; refreshTask?.cancel(); refreshTask = nil
+                    token = next; user = verified
+                    if let previous { Task { await revoke(previous) } }
+                } catch { await discard(next); throw error }
                 if let user {
                     do { try await onSignIn?(user, config) }
-                    catch { if generation == run { message = GodError.unavailable.localizedDescription } }
+                    catch { if loginGeneration == run { message = GodError.unavailable.localizedDescription } }
                 }
                 return
             }
@@ -214,11 +246,12 @@ final class GodAuthentication: ObservableObject {
     }
 
     func cancelSignIn() {
-        generation += 1; loginTask?.cancel(); loginTask = nil
-        isSigningIn = false; userCode = nil; verificationURL = nil
+        loginGeneration += 1; loginTask?.cancel(); loginTask = nil
+        isSigningIn = false; isMigratingAuthentication = false; userCode = nil; verificationURL = nil
     }
     func signOut() {
         let previous = token
+        generation += 1
         cancelSignIn(); refreshTask?.cancel(); refreshTask = nil
         token = nil; user = nil; message = nil
         if let key = keychainAccount { storage.delete(key) }
@@ -257,8 +290,17 @@ final class GodAuthentication: ObservableObject {
         throw GodError.signedOut
     }
     private func verifyUser() async throws -> GodUser {
-        struct Envelope: Decodable { var schemaVersion: Int; var user: GodUser }
         let result = try await request(path: "/session", limit: 32768)
+        return try decodeUser(result)
+    }
+    private func verifyUser(using candidate: GodToken) async throws -> GodUser {
+        var request = URLRequest(url: URL(string: candidate.configuration.apiURL + "/session")!)
+        request.setValue("Bearer " + candidate.accessToken, forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return try decodeUser(try await http.send(request, limit: 32768))
+    }
+    private func decodeUser(_ result: GodHTTPResponse) throws -> GodUser {
+        struct Envelope: Decodable { var schemaVersion: Int; var user: GodUser }
         guard result.status == 200 else { throw GodError.denied }
         let value = try JSONDecoder().decode(Envelope.self, from: result.data)
         guard value.schemaVersion == 1 else { throw GodError.invalidResponse }; try value.user.validate(); return value.user
@@ -276,9 +318,9 @@ final class GodAuthentication: ObservableObject {
             if result.status == 400 || result.status == 401 { throw GodError.signedOut }
             guard result.status == 200 else { throw GodError.unavailable }
             var next = try decodeToken(result.data, configuration: saved.configuration, fallbackRefresh: saved.refreshToken); next.user = saved.user
-            guard run == generation else { await revoke(next); throw CancellationError() }
+            guard run == generation else { await discard(next); throw CancellationError() }
             do { try persist(next) }
-            catch { await revoke(next); throw error }
+            catch { await discard(next); throw error }
             token = next; return next
         }
         refreshTask = task
@@ -300,8 +342,10 @@ final class GodAuthentication: ObservableObject {
         catch { throw GodError.storage }
     }
     private func check(_ run: Int) throws { try Task.checkCancellation(); if run != generation { throw CancellationError() } }
+    private func checkLogin(_ run: Int) throws { try Task.checkCancellation(); if run != loginGeneration { throw CancellationError() } }
     private struct Discovery { var device: URL; var token: URL; var revoke: URL }
     private func discover(_ config: GodConfiguration) async throws -> Discovery {
+        guard GodIssuerPolicy.accepted.contains(config.issuer) else { throw GodError.invalidResponse }
         let issuer = try GodHTTP.origin(config.issuer)
         let response = try await http.send(URLRequest(url: URL(string: config.issuer + "/.well-known/openid-configuration")!), limit: 131072)
         guard response.status == 200, let object = try JSONSerialization.jsonObject(with: response.data) as? [String: Any], object["issuer"] as? String == config.issuer,
@@ -323,6 +367,11 @@ final class GodAuthentication: ObservableObject {
         for (token, hint) in [(value.refreshToken, "refresh_token"), (value.accessToken, "access_token")] {
             _ = try? await post(discovery.revoke, ["client_id": value.configuration.clientID, "token": token, "token_type_hint": hint])
         }
+    }
+    private func discard(_ value: GodToken) async {
+        // An abandoned login/refresh task may already be cancelled. Cleanup
+        // must not inherit that cancellation and silently skip revocation.
+        await Task { @MainActor in await revoke(value) }.value
     }
     static func savePrivate(_ data: Data, to url: URL) throws {
         let directory = url.deletingLastPathComponent()
