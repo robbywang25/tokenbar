@@ -9,6 +9,6 @@ God 新登录使用 `auth.robby.wang`。已登录旧身份服务的用户可以�
 ## 验证与分发边界
 
 - 完整 Swift 测试 267 项通过，含 10 项新迁移回归：新旧会话恢复/刷新隔离、陌生issuer拒绝、取消时保留刷新、同一用户校验、保存失败、退出竞态与新会话重启恢复。
-- 本机 Universal Release 构建验证了 Apple silicon 与 Intel 两种架构。实际 Intel 设备、现有钥匙串升级及本人新域设备授权仍需分别验收。
+- 本机 Universal Release 构建验证了 Apple silicon 与 Intel 两种架构。本机已安装并由本人完成新域授权和同步，服务器已记录同一新域会话的自动续期。Intel 真机和不中断的旧钥匙串会话升级仍未单独实测。
 - 本版本只调整认证、对应账户操作和版本信息；没有改动 provider 接入、额度计算、采集或Widget数据权限。
-- 正式安装包包含现有 WidgetKit 扩展，需完成 Developer ID 签名、公证、票据装订和最终分发校验后交付。发布准备不等于已安装，也不等于已经公开发布。
+- 正式安装包包含现有 WidgetKit 扩展，主应用和扩展均已通过同一 Developer ID 签名；App／DMG 公证、票据装订、Gatekeeper 与最终分发校验通过。
