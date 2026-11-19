@@ -72,11 +72,29 @@ struct GodAccountView: View {
     }
 }
 
+/// Whether the menu-bar panel is on screen, plus the small amount of panel
+/// state that should survive closing it. NSPopover keeps its hosting view alive
+/// after it closes, so the dashboard is only mounted while the panel is shown;
+/// otherwise every per-second countdown keeps re-laying out the whole hidden
+/// account list in the background.
+@MainActor
+final class DashboardPanelState: ObservableObject {
+    @Published var isVisible = false
+    var section: DashboardSection = .accounts
+    var expandedAccounts: Set<UUID> = []
+}
+
 struct GodDashboardRoot: View {
     @ObservedObject var cloud: GodWorkspace
+    @ObservedObject var panel: DashboardPanelState
     var onPanelSizeChange: (CGSize) -> Void
     var body: some View {
-        DashboardView(store: cloud.store, cloud: cloud, onPanelSizeChange: onPanelSizeChange)
-            .id(ObjectIdentifier(cloud.store))
+        if panel.isVisible {
+            DashboardView(store: cloud.store, cloud: cloud, panel: panel, onPanelSizeChange: onPanelSizeChange)
+                .id(ObjectIdentifier(cloud.store))
+        } else {
+            let size = panel.section.panelSize()
+            Color.clear.frame(width: size.width, height: size.height)
+        }
     }
 }

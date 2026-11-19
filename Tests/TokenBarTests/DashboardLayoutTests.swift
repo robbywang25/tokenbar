@@ -40,6 +40,27 @@ final class DashboardLayoutTests: XCTestCase {
     }
 
     @MainActor
+    func testReopenedPanelRestoresSectionAndExpandedAccountsFromPanelState() throws {
+        let fixture = try DashboardLayoutFixture()
+        defer { fixture.remove() }
+        let store = fixture.makeStore()
+        fixture.populate(store, crowded: false, stale: false)
+        let panel = DashboardPanelState()
+        panel.section = .calendar
+        panel.expandedAccounts = [store.accounts[0].id]
+        // The menu-bar root mounts a new DashboardView each time the panel
+        // opens; its initial state must come from the surviving panel state.
+        let view = DashboardView(store: store, panel: panel)
+        let size = DashboardSection.calendar.panelSize()
+        let host = NSHostingView(rootView: view)
+        let window = hiddenWindow(hosting: host, size: size)
+        defer { window.contentView = nil; window.close() }
+        host.layoutSubtreeIfNeeded()
+        XCTAssertEqual(host.fittingSize.width, size.width, accuracy: 1)
+        XCTAssertEqual(host.fittingSize.height, size.height, accuracy: 1)
+    }
+
+    @MainActor
     func testThirtyAccountDashboardKeepsFiniteStableGeometryAcrossRepeatedLayouts() throws {
         let fixture = try DashboardLayoutFixture()
         defer { fixture.remove() }

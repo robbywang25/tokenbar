@@ -15,6 +15,7 @@ enum DashboardSection: String {
 struct DashboardView: View {
     @ObservedObject var store: AppStore
     var cloud: GodWorkspace?
+    var panel: DashboardPanelState?
     var onPanelSizeChange: (CGSize) -> Void
     @State private var showingConnection = false
     @State private var showingSettings = false
@@ -22,11 +23,14 @@ struct DashboardView: View {
     @State private var selectedTab: DashboardSection
     @State private var calendarDate = Date()
 
-    init(store: AppStore, cloud: GodWorkspace? = nil, initialSection: DashboardSection = .accounts,
+    init(store: AppStore, cloud: GodWorkspace? = nil, panel: DashboardPanelState? = nil,
+         initialSection: DashboardSection = .accounts,
          onPanelSizeChange: @escaping (CGSize) -> Void = { _ in }) {
         self.store = store
         self.cloud = cloud
-        self._selectedTab = State(initialValue: initialSection)
+        self.panel = panel
+        self._selectedTab = State(initialValue: panel?.section ?? initialSection)
+        self._expandedAccounts = State(initialValue: panel?.expandedAccounts ?? [])
         self.onPanelSizeChange = onPanelSizeChange
     }
 
@@ -78,7 +82,11 @@ struct DashboardView: View {
         }
         .frame(width: selectedTab.panelSize().width, height: selectedTab.panelSize().height)
         .background(Color(nsColor: .windowBackgroundColor))
-        .onChange(of: selectedTab) { _, _ in onPanelSizeChange(selectedTab.panelSize()) }
+        .onChange(of: selectedTab) { _, _ in
+            panel?.section = selectedTab
+            onPanelSizeChange(selectedTab.panelSize())
+        }
+        .onChange(of: expandedAccounts) { _, _ in panel?.expandedAccounts = expandedAccounts }
         .sheet(isPresented: $showingConnection) {
             ConnectView(store: store)
         }
