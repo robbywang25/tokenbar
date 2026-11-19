@@ -26,6 +26,7 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate
     private var workspaceObservation: AnyCancellable?
     private let expiryNotice = ExpiryNoticeController()
     private let widgetPublisher = WidgetSnapshotPublisher()
+    private let panel = DashboardPanelState()
     private var focusLossObservation: AnyCancellable?
     private var closingFromStatusItem = false
 
@@ -45,7 +46,7 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate
         popover.delegate = self
         popover.animates = true
         popover.contentSize = NSSize(width: 440, height: 620)
-        popover.contentViewController = NSHostingController(rootView: GodDashboardRoot(cloud: cloud) { [weak self] size in
+        popover.contentViewController = NSHostingController(rootView: GodDashboardRoot(cloud: cloud, panel: panel) { [weak self] size in
             self?.popover.contentSize = size
         })
         focusLossObservation = Publishers.CombineLatest(cloud.authentication.$isSigningIn, cloud.authentication.$userCode)
@@ -89,6 +90,8 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate
             expiryNotice.dismissImmediately()
             NSApp.activate(ignoringOtherApps: true)
             applyMenuPanelFocusLossBehavior()
+            panel.isVisible = true
+            popover.contentSize = panel.section.panelSize()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             if let window = popover.contentViewController?.view.window {
                 window.makeKey()
@@ -116,7 +119,12 @@ final class TokenBarDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate
         return dismisses
     }
 
-    func popoverDidClose(_ notification: Notification) { showExpiryNoticeIfNeeded() }
+    func popoverDidClose(_ notification: Notification) {
+        // Unmount the dashboard once the close animation finishes; the hidden
+        // hosting view would otherwise keep rendering every second.
+        panel.isVisible = false
+        showExpiryNoticeIfNeeded()
+    }
 
     private func applyMenuPanelFocusLossBehavior() {
         popover.behavior = menuPanelDismissesOnFocusLoss(cloud.authentication, presentationActive: store.isPresentingFileExporter) ? .transient : .applicationDefined
