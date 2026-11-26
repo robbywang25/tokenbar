@@ -24,8 +24,29 @@ struct GodConfiguration: Codable, Equatable {
     var scopes: [String]
     var authentication: String
     var switchSyncDefault: Bool
+    var accountWebURL: String? = nil
+    var catalogVersion: Int? = nil
+    var catalogURL: String? = nil
+
+    var resolvedAccountWebURL: URL {
+        if let accountWebURL, let url = URL(string: accountWebURL),
+           url.scheme?.lowercased() == "https", url.host != nil {
+            return url
+        }
+        return URL(string: "https://account.robby.wang/")!
+    }
+
     func validate(origin: String) throws {
         _ = try GodHTTP.origin(origin); _ = try GodHTTP.origin(issuer)
+        if let accountWebURL {
+            _ = try GodHTTP.origin(accountWebURL)
+        }
+        if let catalogVersion {
+            guard catalogVersion >= 1 else { throw GodError.invalidResponse }
+        }
+        if let catalogURL {
+            guard catalogURL == apiURL + "/catalog" else { throw GodError.invalidResponse }
+        }
         guard GodIssuerPolicy.accepted.contains(issuer), schemaVersion == 1, clientID == "tokenbar-macos", apiURL == origin + "/api/tokenbar/v1", audience == apiURL,
               authentication == "device_authorization", switchSyncDefault,
               Set(scopes) == Set(["openid", "offline_access", "god.tokenbar.read", "god.tokenbar.sync"]), scopes.count == 4 else { throw GodError.invalidResponse }

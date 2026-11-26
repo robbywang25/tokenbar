@@ -271,6 +271,22 @@ struct ProviderClient {
         let orderProvider = AccountDisplayOrder.providerKey(product: account["product"] as? String,
             provider: account["provider"] as? String ?? account["serviceLabel"] as? String, sourceID: orderID)
         result.displayOrder = AccountDisplayOrder.parse(account["displayOrder"], providerKey: orderProvider, sourceID: orderID)
+        if let category = account["category"] as? String, ["coding", "chat", "api"].contains(category) {
+            result.category = category
+        }
+        result.unsubscribed = boolean(account["unsubscribed"])
+        if let rawPriority = account["widgetPriority"] as? String, let priority = TokenWidgetPriority(rawValue: rawPriority) {
+            result.widgetPriority = priority
+        }
+        result.calendarEligible = boolean(account["calendarEligible"])
+        if let ren = account["renewal"] as? [String: Any],
+           let renStatus = ren["status"] as? String,
+           ["active", "trial", "included", "internal", "canceled", "free"].contains(renStatus) {
+            let nextDate = (ren["nextDate"] as? String).flatMap {
+                $0.range(of: "\\A20\\d{2}-\\d{2}-\\d{2}\\z", options: .regularExpression) != nil ? $0 : nil
+            }
+            result.renewal = TokenRenewalSummary(status: renStatus, autoRenew: boolean(ren["autoRenew"]), nextDate: nextDate)
+        }
         if account.keys.contains("sourceCollectedAt") {
             result.sourceCollectedAtPresent = true
             result.sourceCollectedAt = date(account["sourceCollectedAt"])

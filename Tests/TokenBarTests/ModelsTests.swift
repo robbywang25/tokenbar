@@ -174,4 +174,27 @@ final class ModelsTests: XCTestCase {
         XCTAssertTrue(store.readings.isEmpty)
         XCTAssertEqual(store.menuTitle, "—")
     }
+
+    func testAntigravityMenuPrefixAndAdditiveConfigurationFields() throws {
+        let antigravity = AccountConfig(provider: .snapshot, name: "Antigravity", method: .snapshotFile, location: "", serviceLabel: "Antigravity")
+        XCTAssertEqual(antigravity.menuAgentPrefix, "Antigravity")
+
+        let json: [String: Any] = [
+            "schemaVersion": 1,
+            "issuer": "https://auth.robby.wang",
+            "clientID": "tokenbar-macos",
+            "audience": "https://god.robby.wang/api/tokenbar/v1",
+            "apiURL": "https://god.robby.wang/api/tokenbar/v1",
+            "scopes": ["openid", "offline_access", "god.tokenbar.read", "god.tokenbar.sync"],
+            "authentication": "device_authorization",
+            "switchSyncDefault": true,
+            "accountWebURL": "https://account.robby.wang/",
+            "catalogVersion": 1,
+            "catalogURL": "https://god.robby.wang/api/tokenbar/v1/catalog",
+        ]
+        let config = try JSONDecoder().decode(GodConfiguration.self, from: JSONSerialization.data(withJSONObject: json))
+        try config.validate(origin: "https://god.robby.wang")
+        XCTAssertEqual(config.resolvedAccountWebURL.absoluteString, "https://account.robby.wang/")
+        XCTAssertEqual(config.catalogVersion, 1)
+    }
 }

@@ -260,6 +260,53 @@ final class SnapshotDiscoveryTests: XCTestCase {
         XCTAssertNotNil(restored.errorMessage)
     }
 
+    func testCatalogMetadataAndAdditiveAccountFieldsDecodeSafely() throws {
+        let now = Date()
+        var antigravityRow = row("antigravity", service: "Antigravity", at: now)
+        antigravityRow["product"] = "antigravity"
+        antigravityRow["category"] = "coding"
+        antigravityRow["unsubscribed"] = false
+        antigravityRow["widgetPriority"] = "pinned"
+        antigravityRow["calendarEligible"] = true
+        antigravityRow["renewal"] = ["status": "active", "autoRenew": true, "nextDate": "2026-12-01"]
+
+        let payload: [String: Any] = [
+            "schemaVersion": 1,
+            "collectedAt": ISO8601DateFormatter().string(from: now),
+            "accounts": [antigravityRow],
+            "catalog": [
+                "schemaVersion": 1,
+                "catalogVersion": 1,
+                "generatedAt": ISO8601DateFormatter().string(from: now),
+                "entries": [[
+                    "id": "antigravity",
+                    "providerKey": "antigravity",
+                    "provider": "Antigravity",
+                    "product": "antigravity",
+                    "label": "Antigravity",
+                    "serviceLabel": "Antigravity",
+                    "category": "coding",
+                    "subscriptionState": "active",
+                    "unsubscribed": false,
+                    "defaultVisible": true,
+                    "widgetPriority": "pinned",
+                    "widgetEligible": true,
+                    "calendarEligible": true,
+                    "renewalEligible": true
+                ]]
+            ]
+        ]
+        let parsed = try SnapshotCatalog.parse(JSONSerialization.data(withJSONObject: payload), source: "god", at: now)
+        XCTAssertEqual(parsed.serverCatalog?.catalogVersion, 1)
+        XCTAssertEqual(parsed.serverCatalog?.entries.first?.id, "antigravity")
+        let entry = try XCTUnwrap(parsed.entries.first)
+        XCTAssertEqual(entry.reading.category, "coding")
+        XCTAssertEqual(entry.reading.unsubscribed, false)
+        XCTAssertEqual(entry.reading.widgetPriority, .pinned)
+        XCTAssertEqual(entry.reading.calendarEligible, true)
+        XCTAssertEqual(entry.reading.renewal, TokenRenewalSummary(status: "active", autoRenew: true, nextDate: "2026-12-01"))
+    }
+
     private func row(_ id: String, service: String? = nil, email: String = "fixture@example.test", at now: Date = Date()) -> [String: Any] {
         var value: [String: Any] = ["id": id, "status": "connected", "profile": ["email": email],
             "lastSuccessAt": now.timeIntervalSince1970,

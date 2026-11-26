@@ -66,6 +66,7 @@ struct AccountConfig: Codable, Identifiable, Equatable {
         case "geminiweb": return "Gemini Web"
         case "geminiapi": return "Gemini API"
         case "antigravitycli": return "AG CLI"
+        case "antigravity": return "Antigravity"
         default: return label.count > 8 ? String(label.prefix(8)) + "…" : label
         }
     }
@@ -206,6 +207,16 @@ struct ResetCard: Codable, Equatable {
     var resetType: String? = nil
 }
 
+struct TokenRenewalSummary: Codable, Equatable, Sendable {
+    var status: String
+    var autoRenew: Bool? = nil
+    var nextDate: String? = nil
+}
+
+enum TokenWidgetPriority: String, Codable, Equatable, Sendable {
+    case pinned, normal, low, hidden
+}
+
 struct AccountReading: Codable, Equatable {
     var status: ReadingStatus
     var checkedAt: Date
@@ -233,6 +244,12 @@ struct AccountReading: Codable, Equatable {
     var resetHistoryIdentity: String? = nil
     var product: String? = nil
     var displayOrder: AccountDisplayOrder? = nil
+    // Server-driven token catalog metadata (additive; optional for older producers).
+    var category: String? = nil
+    var unsubscribed: Bool? = nil
+    var widgetPriority: TokenWidgetPriority? = nil
+    var calendarEligible: Bool? = nil
+    var renewal: TokenRenewalSummary? = nil
     // Used requests/tokens in a measured interval, never a remaining allowance.
     var usageMetrics: [UsageMetric]? = nil
     // Dated observations remain separate from native balances and sync records.

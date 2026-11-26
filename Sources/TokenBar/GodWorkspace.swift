@@ -8,7 +8,12 @@ final class GodWorkspace: ObservableObject {
     @Published private(set) var isSyncing = false
     @Published private(set) var syncMessage: String?
     @Published private(set) var lastSynced: Date?
+    @Published private(set) var catalogMetadata: ServerTokenCatalog?
     let authentication: GodAuthentication
+
+    var accountWebURL: URL {
+        authentication.token?.configuration.resolvedAccountWebURL ?? URL(string: "https://account.robby.wang/")!
+    }
     private let base: URL
     private let localDefaults: UserDefaults
     private let startTimers: Bool
@@ -134,6 +139,7 @@ final class GodWorkspace: ObservableObject {
                     (range == .hour && envelope?["historyRange"] == nil) else { throw GodError.invalidResponse }
             let catalog = try SnapshotCatalog.parse(response.data, source: "god", at: Date())
             guard epoch == run, store.trendRange == range else { return }
+            catalogMetadata = catalog.serverCatalog
             try GodAuthentication.savePrivate(response.data, to: profile.appendingPathComponent("god-quotas.json"))
             store.setQuotaSourceAuthorization(Self.godID, allowed: true)
             var records: [String: SyncJSON] = [:]
@@ -286,7 +292,7 @@ final class GodWorkspace: ObservableObject {
     }
     private func returnToLocal() {
         epoch += 1; store.stop(); syncTimer?.invalidate(); syncTimer = nil; editTask?.cancel(); editTask = nil
-        profile = nil; journal = GodSyncJournal(); journalReadFailed = false; canonicalAccounts = [:]; sharedAccounts = [:]
+        profile = nil; journal = GodSyncJournal(); journalReadFailed = false; canonicalAccounts = [:]; sharedAccounts = [:]; catalogMetadata = nil
         isSyncing = false; preparing = false; applying = false; lastSynced = nil; syncMessage = nil; syncSwitches = true
         store = AppStore(directory: base, startTimers: startTimers, defaults: localDefaults)
         if startTimers { Task { await store.refresh() } }

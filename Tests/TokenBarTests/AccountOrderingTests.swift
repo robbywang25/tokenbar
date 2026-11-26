@@ -100,6 +100,18 @@ final class AccountOrderingTests: XCTestCase {
         XCTAssertEqual(portable["displayOrder"], record["displayOrder"])
     }
 
+    func testAntigravityAndGeminiWebThreeFallbackOrdering() {
+        let accounts = [
+            account("antigravity", "Antigravity"),
+            account("gemini-web-2", "Gemini"),
+            account("gemini-web-3", "Gemini"),
+            account("gemini-web", "Gemini"),
+        ]
+        XCTAssertEqual(sorted(accounts).map(\.sourceAccountID), ["gemini-web", "gemini-web-3", "gemini-web-2", "antigravity"])
+        XCTAssertEqual(AccountDisplayOrder.providerKey(product: "antigravity", provider: "Antigravity", sourceID: "antigravity"), "antigravity")
+        XCTAssertEqual(AccountDisplayOrder.providerKey(product: "gemini-cli", provider: "Antigravity CLI", sourceID: "gemini-cli"), "google")
+    }
+
     private func sorted<S: Sequence>(_ values: S) -> [AccountConfig] where S.Element == AccountConfig {
         AccountDisplayOrder.sorted(Array(values), order: { $0.accountDisplayOrder }, stableID: { $0.orderingSourceID })
     }

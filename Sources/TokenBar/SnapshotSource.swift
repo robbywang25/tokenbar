@@ -29,6 +29,75 @@ struct SnapshotSource: Codable, Identifiable, Equatable {
     }
 }
 
+struct ServerTokenCatalogEntry: Equatable, Sendable {
+    var id: String
+    var providerKey: String
+    var provider: String
+    var product: String
+    var label: String
+    var serviceLabel: String
+    var accountNumber: Int?
+    var category: String
+    var subscriptionState: String?
+    var unsubscribed: Bool
+    var defaultVisible: Bool
+    var widgetPriority: TokenWidgetPriority
+    var widgetEligible: Bool
+    var calendarEligible: Bool
+    var renewalEligible: Bool?
+}
+
+struct ServerTokenCatalog: Equatable, Sendable {
+    var schemaVersion: Int
+    var catalogVersion: Int
+    var generatedAt: String?
+    var entries: [ServerTokenCatalogEntry]
+
+    static func parse(_ raw: Any?) -> ServerTokenCatalog? {
+        guard let dict = raw as? [String: Any],
+              let schema = integer(dict["schemaVersion"]), schema == 1,
+              let catalogVersion = integer(dict["catalogVersion"]), catalogVersion >= 1,
+              let rawEntries = dict["entries"] as? [[String: Any]],
+              rawEntries.count <= 1_000 else { return nil }
+        var entries: [ServerTokenCatalogEntry] = []
+        for item in rawEntries {
+            guard let id = item["id"] as? String, !id.isEmpty, id.count <= 120,
+                  let providerKey = item["providerKey"] as? String,
+                  let provider = item["provider"] as? String,
+                  let product = item["product"] as? String,
+                  let label = item["label"] as? String,
+                  let serviceLabel = item["serviceLabel"] as? String,
+                  let category = item["category"] as? String, ["coding", "chat", "api"].contains(category),
+                  let rawPriority = item["widgetPriority"] as? String,
+                  let priority = TokenWidgetPriority(rawValue: rawPriority),
+                  let unsubscribed = bool(item["unsubscribed"]),
+                  let defaultVisible = bool(item["defaultVisible"]),
+                  let widgetEligible = bool(item["widgetEligible"]),
+                  let calendarEligible = bool(item["calendarEligible"]) else { continue }
+            entries.append(ServerTokenCatalogEntry(
+                id: id, providerKey: providerKey, provider: provider, product: product,
+                label: label, serviceLabel: serviceLabel, accountNumber: integer(item["accountNumber"]),
+                category: category, subscriptionState: item["subscriptionState"] as? String,
+                unsubscribed: unsubscribed, defaultVisible: defaultVisible,
+                widgetPriority: priority, widgetEligible: widgetEligible,
+                calendarEligible: calendarEligible, renewalEligible: bool(item["renewalEligible"])))
+        }
+        return ServerTokenCatalog(schemaVersion: schema, catalogVersion: catalogVersion,
+                                  generatedAt: dict["generatedAt"] as? String, entries: entries)
+    }
+
+    private static func integer(_ value: Any?) -> Int? {
+        guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(),
+              n.doubleValue.isFinite, n.doubleValue.rounded() == n.doubleValue else { return nil }
+        return n.intValue
+    }
+
+    private static func bool(_ value: Any?) -> Bool? {
+        guard let n = value as? NSNumber, CFGetTypeID(n) == CFBooleanGetTypeID() else { return nil }
+        return n.boolValue
+    }
+}
+
 struct SnapshotCatalog {
     struct Entry {
         var id: String
@@ -47,6 +116,7 @@ struct SnapshotCatalog {
         }
     }
     var entries: [Entry]
+    var serverCatalog: ServerTokenCatalog? = nil
 
     static func parse(_ data: Data, source: String, at now: Date) throws -> SnapshotCatalog {
         guard data.count <= ProviderClient.maximumBytes,
@@ -65,6 +135,8 @@ struct SnapshotCatalog {
         } else { additional = [] }
         let rows = primary + additional
         guard rows.count <= 1_000 else { throw ProviderError.invalidData }
+        let parsedServerCatalog = ServerTokenCatalog.parse(root["catalog"])
+        let catalogByID = Dictionary((parsedServerCatalog?.entries ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var ids = Set<String>()
         var entries: [Entry] = []
         for row in rows {
@@ -73,7 +145,7 @@ struct SnapshotCatalog {
                   ids.insert(id).inserted else { throw ProviderError.invalidData }
             var document: [String: Any] = ["schemaVersion": 1, "accounts": [row]]
             if let timestamp = root["collectedAt"] { document["collectedAt"] = timestamp }
-            let reading: AccountReading
+            var reading: AccountReading
             do {
                 reading = try ProviderClient.parseSnapshot(JSONSerialization.data(withJSONObject: document),
                     sourceAccountID: id, source: source, at: now)
@@ -82,12 +154,18 @@ struct SnapshotCatalog {
                 reading = AccountReading(status: .unavailable, checkedAt: now, lastSuccessAt: nil,
                     detail: ProviderError.invalidData.message, reason: "invalid_data")
             }
+            if let meta = catalogByID[id] {
+                if reading.category == nil { reading.category = meta.category }
+                if reading.unsubscribed == nil { reading.unsubscribed = meta.unsubscribed }
+                if reading.widgetPriority == nil { reading.widgetPriority = meta.widgetPriority }
+                if reading.calendarEligible == nil { reading.calendarEligible = meta.calendarEligible }
+            }
             let label = serviceLabel(row, id: id)
             let key = AccountDisplayOrder.providerKey(product: row["product"] as? String, provider: row["provider"] as? String ?? label, sourceID: id)
             let displayOrder = AccountDisplayOrder.parse(row["displayOrder"], providerKey: key, sourceID: id)
             entries.append(Entry(id: id, serviceLabel: label, reading: reading, displayOrder: displayOrder))
         }
-        return SnapshotCatalog(entries: entries)
+        return SnapshotCatalog(entries: entries, serverCatalog: parsedServerCatalog)
     }
 
     private static func serviceLabel(_ row: [String: Any], id: String) -> String {
@@ -98,6 +176,7 @@ struct SnapshotCatalog {
             }
         }
         // Display fallback for older producers. This is not an account allowlist.
+        if id == "antigravity" { return "Antigravity" }
         if id == "codex" || id.hasPrefix("codex-") { return "Codex" }
         if id == "claude" || id.hasPrefix("claude-") { return "Claude Code" }
         if id == "grok-bot" { return "Grok Bot" }
@@ -128,6 +207,6 @@ extension SnapshotCatalog {
                 var window = window; window.usageTrend = match.usageTrend; return window
             }
             return result
-        })
+        }, serverCatalog: serverCatalog ?? other.serverCatalog)
     }
 }

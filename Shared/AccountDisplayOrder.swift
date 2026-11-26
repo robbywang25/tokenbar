@@ -17,12 +17,12 @@ public struct AccountDisplayOrder: Codable, Equatable, Sendable {
     }
 
     public static let providerWeights = ["openai": 100, "anthropic": 200, "xai": 300,
-        "cursor": 400, "today": 500, "google": 600, "other": 900]
+        "cursor": 400, "today": 500, "google": 600, "antigravity": 650, "other": 900]
     private static let accountWeights = ["codex-1": 100, "codex-2": 200,
         "chatgpt-dots": 300, "chatgpt-chat": 400, "claude-1": 100, "claude-2": 200,
         "grok": 100, "grok-bot": 200, "cursor": 100, "today-cn": 100, "today-global": 200,
-        "gemini-web": 100, "gemini-web-2": 200, "gemini-cli": 300, "gemini-cli-2": 400,
-        "gemini-api": 500, "gemini-api-2": 600]
+        "gemini-web": 100, "gemini-web-3": 150, "gemini-web-2": 200, "gemini-cli": 300, "gemini-cli-2": 400,
+        "gemini-api": 500, "gemini-api-2": 600, "antigravity": 100]
 
     public var isValid: Bool {
         version == 1 && Self.providerWeights[providerKey] != nil &&
@@ -35,6 +35,8 @@ public struct AccountDisplayOrder: Codable, Equatable, Sendable {
 
     public static func providerKey(product: String? = nil, provider: String? = nil, sourceID: String = "") -> String {
         let product = product?.lowercased() ?? "", provider = provider?.lowercased() ?? ""
+        let id = Self.sourceID(sourceID)
+        if product == "antigravity" || provider == "antigravity" || id.lowercased() == "antigravity" { return "antigravity" }
         if ["gemini-cli", "gemini-web", "gemini-api"].contains(product) || ["google", "gemini", "gemini cli", "gemini web", "gemini api", "antigravity cli", "geminicli", "geminiweb", "geminiapi", "ag cli"].contains(provider) { return "google" }
         if ["today-cn", "today-global"].contains(product) || provider.hasPrefix("todayai") { return "today" }
         if product == "cursor" || provider == "cursor" { return "cursor" }
@@ -42,7 +44,6 @@ public struct AccountDisplayOrder: Codable, Equatable, Sendable {
         if ["grok", "grok-bot"].contains(product) || ["xai", "x.ai", "grok", "grok build", "grok bot", "grokbot", "grokbuild"].contains(provider) { return "xai" }
         if ["codex", "chatgpt-dots", "chatgpt-chat"].contains(product) || ["openai", "codex", "chatgpt", "openai codex", "openaicodex"].contains(provider) { return "openai" }
         // Older local snapshot producers may supply only their stable slot ID.
-        let id = Self.sourceID(sourceID)
         if id == "codex" || id.hasPrefix("codex-") || id.hasPrefix("chatgpt-") { return "openai" }
         if id == "claude" || id.hasPrefix("claude-") { return "anthropic" }
         if id == "grok" || id.hasPrefix("grok-") { return "xai" }
