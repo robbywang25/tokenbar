@@ -93,7 +93,16 @@ struct GodSyncJournal: Codable {
         }
     }
     func patch() -> GodSyncPatch {
-        GodSyncPatch(baseRevision: remote.revision, operations: pending.keys.sorted().prefix(200).map { GodSyncOperation(key: $0, value: pending[$0]!) })
+        let operations = pending.keys.sorted().prefix(200).map { key in
+            GodSyncOperation(key: key, value: Self.sanitizedPendingValue(pending[key]!, key: key))
+        }
+        return GodSyncPatch(baseRevision: remote.revision, operations: operations)
+    }
+    private static func sanitizedPendingValue(_ value: SyncJSON, key: String) -> SyncJSON {
+        guard key.hasPrefix("a:"), var record = value.object, var reading = record["reading"]?.object else { return value }
+        for field in GodSyncProjection.disallowedReadingFields { reading.removeValue(forKey: field) }
+        record["reading"] = .object(reading)
+        return .object(record)
     }
     mutating func acknowledge(_ patch: GodSyncPatch, document: GodSyncDocument) {
         remote = document
@@ -122,12 +131,24 @@ struct GodSyncJournal: Codable {
 }
 
 enum GodSyncProjection {
+    static let disallowedReadingFields = [
+        "name", "detail", "resetHistory",
+        "product", "displayOrder", "category", "unsubscribed",
+        "widgetPriority", "calendarEligible", "renewal",
+        "usageMetrics", "reportedResetCards"
+    ]
+
     static func reading(_ reading: AccountReading) throws -> SyncJSON {
         // Trends are fetched from the authoritative source on each device.
         // Do not expand the deployed strict sync schema or repeatedly upload history.
         var portable = reading
         portable.product = nil
         portable.displayOrder = nil
+        portable.category = nil
+        portable.unsubscribed = nil
+        portable.widgetPriority = nil
+        portable.calendarEligible = nil
+        portable.renewal = nil
         portable.usageMetrics = nil
         portable.reportedResetCards = nil
         portable.resetCards = portable.resetCards.map { ResetCard(status: $0.status, expiresAt: $0.expiresAt) }
@@ -136,7 +157,7 @@ enum GodSyncProjection {
             var window = window; window.usageTrend = nil; return window
         }
         var object = try SyncJSON.encode(portable).object!
-        for field in ["name", "detail", "resetHistory"] { object.removeValue(forKey: field) }
+        for field in disallowedReadingFields { object.removeValue(forKey: field) }
         return .object(object)
     }
     static func decodeReading(_ value: SyncJSON) throws -> AccountReading {

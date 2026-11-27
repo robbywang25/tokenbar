@@ -6,9 +6,27 @@ public enum TokenBarWidgetConstants {
     public static let snapshotFilename = "widget-snapshot.json"
     public static let maximumBytes = 128 * 1_024
     public static let maximumAccounts = 30
+    public static let maximumDisplayedAccounts = 8
     public static let maximumMetrics = 3
     public static let maximumResetCards = 1_000_000
     public static let rankingGraceInterval: TimeInterval = 3_600
+}
+
+public enum TokenWidgetPriority: String, Codable, Equatable, Sendable {
+    case pinned, normal, low, hidden
+
+    public var priorityRank: Int {
+        switch self {
+        case .pinned: return 0
+        case .normal: return 1
+        case .low: return 2
+        case .hidden: return 3
+        }
+    }
+
+    public func isEligibleForWidget(unsubscribed: Bool?) -> Bool {
+        self != .hidden && !(unsubscribed == true && self != .pinned)
+    }
 }
 
 public enum TokenBarWidgetStatus: String, Codable, Equatable, Sendable {
@@ -38,7 +56,7 @@ public struct TokenBarWidgetSnapshot: Codable, Equatable, Sendable {
     }
 
     public func rankedAccounts(at now: Date) -> [TokenBarWidgetAccount] {
-        accounts.enumerated().sorted { first, second in
+        accounts.enumerated().filter { $0.element.isEligibleForWidget }.sorted { first, second in
             let leftTier = first.element.rankingTier(at: now), rightTier = second.element.rankingTier(at: now)
             if leftTier != rightTier { return leftTier < rightTier }
             let left = first.element.rankingUrgency(at: now), right = second.element.rankingUrgency(at: now)
@@ -49,15 +67,21 @@ public struct TokenBarWidgetSnapshot: Codable, Equatable, Sendable {
         }.map(\.element)
     }
 
-    /// Multi-account overviews use the same supplier order as the main app.
+    /// Multi-account overviews keep widget priority tiers (`pinned -> normal -> low`)
+    /// ahead of supplier order and respect the top-8 widget cap.
     /// The single-account widget still uses rankedAccounts for urgent selection.
     public func displayOrderedAccounts() -> [TokenBarWidgetAccount] {
-        AccountDisplayOrder.sorted(accounts, order: { account in
-            let key = account.displayOrder?.isValid == true ? account.displayOrder!.providerKey :
-                AccountDisplayOrder.providerKey(provider: account.provider)
-            return account.displayOrder?.resolved(providerKey: key, sourceID: "") ??
-                AccountDisplayOrder.fallback(providerKey: key, sourceID: "")
-        }, stableID: { _ in "" })
+        let eligible = accounts.filter(\.isEligibleForWidget)
+        let grouped = Dictionary(grouping: eligible) { ($0.widgetPriority ?? .normal).priorityRank }
+        let ordered = grouped.keys.sorted().flatMap { rank in
+            AccountDisplayOrder.sorted(grouped[rank] ?? [], order: { account in
+                let key = account.displayOrder?.isValid == true ? account.displayOrder!.providerKey :
+                    AccountDisplayOrder.providerKey(provider: account.provider)
+                return account.displayOrder?.resolved(providerKey: key, sourceID: "") ??
+                    AccountDisplayOrder.fallback(providerKey: key, sourceID: "")
+            }, stableID: { _ in "" })
+        }
+        return Array(ordered.prefix(TokenBarWidgetConstants.maximumDisplayedAccounts))
     }
 
     public func urgencyBoundaryDates(after: Date, before: Date) -> [Date] {
@@ -94,11 +118,18 @@ public struct TokenBarWidgetAccount: Codable, Equatable, Identifiable, Sendable 
     // identifies a legacy snapshot eligible for the observedAt-only fallback.
     public var rankingObservedAtPresent: Bool? = nil
     public var displayOrder: AccountDisplayOrder? = nil
+    public var widgetPriority: TokenWidgetPriority? = nil
+    public var unsubscribed: Bool? = nil
+
+    public var isEligibleForWidget: Bool {
+        (widgetPriority ?? .normal).isEligibleForWidget(unsubscribed: unsubscribed)
+    }
 
     public init(id: UUID, email: String?, provider: String, plan: String?, status: TokenBarWidgetStatus,
                 observedAt: Date?, freshUntil: Date?, metrics: [TokenBarWidgetMetric], resetCards: Int? = nil,
                 urgencyWindow: QuotaUrgencyWindow? = nil, rankingObservedAt: Date? = nil,
-                rankingObservedAtPresent: Bool? = nil, resetCardExpirations: [Date]? = nil, displayOrder: AccountDisplayOrder? = nil) {
+                rankingObservedAtPresent: Bool? = nil, resetCardExpirations: [Date]? = nil, displayOrder: AccountDisplayOrder? = nil,
+                widgetPriority: TokenWidgetPriority? = nil, unsubscribed: Bool? = nil) {
         self.id = id
         self.email = email
         self.provider = provider
@@ -113,6 +144,8 @@ public struct TokenBarWidgetAccount: Codable, Equatable, Identifiable, Sendable 
         self.rankingObservedAt = rankingObservedAt
         self.rankingObservedAtPresent = rankingObservedAtPresent
         self.displayOrder = displayOrder
+        self.widgetPriority = widgetPriority
+        self.unsubscribed = unsubscribed
     }
 
     public func urgency(at now: Date) -> QuotaUrgencyAssessment? {

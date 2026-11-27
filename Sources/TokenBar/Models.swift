@@ -39,6 +39,37 @@ struct AccountConfig: Codable, Identifiable, Equatable {
     var displayOrder: AccountDisplayOrder? = nil
     var displayService: String { serviceLabel ?? provider.title }
 
+    var isCodexService: Bool {
+        provider == .codex || menuAgentPrefix == "Codex" || menuAgentPrefix.hasPrefix("Codex ")
+    }
+
+    static func splitNumberedLabel(_ label: String) -> (base: String, suffix: String) {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let range = trimmed.range(of: " [0-9]{1,3}\\z", options: .regularExpression) else {
+            return (trimmed, "")
+        }
+        return (String(trimmed[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines), String(trimmed[range]))
+    }
+
+    func isCoding(reading: AccountReading?) -> Bool {
+        if let category = reading?.category { return category == "coding" }
+        let productKey = reading?.product?.lowercased() ?? ""
+        let sourceKey = AccountDisplayOrder.sourceID(sourceAccountID).lowercased()
+        let service = Self.splitNumberedLabel(displayService).base.lowercased()
+        if productKey == "gemini-api" || sourceKey == "gemini-api" || sourceKey.hasPrefix("gemini-api-")
+            || service == "gemini api" {
+            return false
+        }
+        let chatKeys: Set<String> = ["chatgpt-dots", "chatgpt-chat", "today-cn", "today-global", "gemini-web"]
+        if chatKeys.contains(productKey) || chatKeys.contains(sourceKey)
+            || sourceKey.hasPrefix("gemini-web-") || sourceKey.hasPrefix("today-")
+            || service == "gemini web" || service.hasPrefix("todayai")
+            || service == "chatgpt dots" || service == "chatgpt 聊天" {
+            return false
+        }
+        return true
+    }
+
     var menuAgentPrefix: String {
         switch provider {
         case .codex: return "Codex"
@@ -51,22 +82,26 @@ struct AccountConfig: Codable, Identifiable, Equatable {
         let label = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ").precomposedStringWithCanonicalMapping
         guard !label.isEmpty,
               label.range(of: "\\A[\\p{L}\\p{N} ._-]+\\z", options: .regularExpression) != nil else { return "JSON" }
-        let key = label.lowercased().filter { !" ._-".contains($0) }
+        let parts = Self.splitNumberedLabel(label)
+        let key = parts.base.lowercased().filter { !" ._-".contains($0) }
         switch key {
-        case "codex", "openaicodex": return "Codex"
-        case "chatgpt": return "ChatGPT"
-        case "openai": return "OpenAI"
-        case "claude", "claudecode": return "Claude"
-        case "anthropic": return "Anthropic"
-        case "grok", "grokbuild": return "Grok"
-        case "xai": return "xAI"
-        case "grokbot": return "GrokBot"
-        case "cursor": return "Cursor"
-        case "geminicli": return "Gemini CLI"
-        case "geminiweb": return "Gemini Web"
-        case "geminiapi": return "Gemini API"
-        case "antigravitycli": return "AG CLI"
-        case "antigravity": return "Antigravity"
+        case "codex", "openaicodex": return "Codex" + parts.suffix
+        case "chatgpt": return "ChatGPT" + parts.suffix
+        case "openai": return "OpenAI" + parts.suffix
+        case "claude", "claudecode": return "Claude" + parts.suffix
+        case "anthropic": return "Anthropic" + parts.suffix
+        case "grok", "grokbuild": return "Grok" + parts.suffix
+        case "xai": return "xAI" + parts.suffix
+        case "grokbot": return "GrokBot" + parts.suffix
+        case "cursor": return "Cursor" + parts.suffix
+        case "todayai": return "TodayAI" + parts.suffix
+        case "todayai中国版", "todaycn": return "TodayAI 中国版"
+        case "todayai全球版", "todayglobal": return "TodayAI 全球版"
+        case "geminicli": return "Gemini CLI" + parts.suffix
+        case "geminiweb": return "Gemini Web" + parts.suffix
+        case "geminiapi": return "Gemini API" + parts.suffix
+        case "antigravitycli": return "AG CLI" + parts.suffix
+        case "antigravity": return "Antigravity" + parts.suffix
         default: return label.count > 8 ? String(label.prefix(8)) + "…" : label
         }
     }
@@ -211,10 +246,6 @@ struct TokenRenewalSummary: Codable, Equatable, Sendable {
     var status: String
     var autoRenew: Bool? = nil
     var nextDate: String? = nil
-}
-
-enum TokenWidgetPriority: String, Codable, Equatable, Sendable {
-    case pinned, normal, low, hidden
 }
 
 struct AccountReading: Codable, Equatable {

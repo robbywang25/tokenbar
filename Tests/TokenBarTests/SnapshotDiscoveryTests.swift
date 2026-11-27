@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import TokenBarWidgetShared
 @testable import TokenBar
 
 final class SnapshotDiscoveryTests: XCTestCase {
@@ -305,6 +306,85 @@ final class SnapshotDiscoveryTests: XCTestCase {
         XCTAssertEqual(entry.reading.widgetPriority, .pinned)
         XCTAssertEqual(entry.reading.calendarEligible, true)
         XCTAssertEqual(entry.reading.renewal, TokenRenewalSummary(status: "active", autoRenew: true, nextDate: "2026-12-01"))
+    }
+
+    @MainActor
+    func testCatalogOrderDefaultVisibleNumberingAndShortLabelAlignment() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        let now = Date()
+        func catalogEntry(id: String, providerKey: String, provider: String, product: String, label: String,
+                          serviceLabel: String, shortLabel: String? = nil, accountNumber: Int? = nil,
+                          defaultVisible: Bool = true, providerWeight: Int, accountWeight: Int) -> [String: Any] {
+            var entry: [String: Any] = [
+                "id": id,
+                "providerKey": providerKey,
+                "provider": provider,
+                "product": product,
+                "label": label,
+                "serviceLabel": serviceLabel,
+                "category": product == "gemini-web" || product == "chatgpt-dots" ? "chat" : "coding",
+                "unsubscribed": false,
+                "defaultVisible": defaultVisible,
+                "widgetPriority": id == "antigravity-2" ? "pinned" : (defaultVisible ? "normal" : "hidden"),
+                "widgetEligible": defaultVisible,
+                "calendarEligible": defaultVisible,
+                "displayOrder": ["version": 1, "providerKey": providerKey, "providerWeight": providerWeight, "accountWeight": accountWeight]
+            ]
+            if let shortLabel { entry["shortLabel"] = shortLabel }
+            if let accountNumber { entry["accountNumber"] = accountNumber }
+            return entry
+        }
+
+        // Deliberately write accounts in scrambled order without per-row displayOrder.
+        var hiddenDots = row("chatgpt-dots", service: "ChatGPT Dots", at: now); hiddenDots["product"] = "chatgpt-dots"
+        var web2 = row("gemini-web-2", service: "Gemini Web", at: now); web2["product"] = "gemini-web"
+        var agy2 = row("antigravity-2", service: "Antigravity", at: now); agy2["product"] = "antigravity"
+        var web1 = row("gemini-web", service: "Gemini Web", at: now); web1["product"] = "gemini-web"
+        var web3 = row("gemini-web-3", service: "Gemini Web", at: now); web3["product"] = "gemini-web"
+
+        let payload: [String: Any] = [
+            "schemaVersion": 1,
+            "collectedAt": now.timeIntervalSince1970,
+            "accounts": [web2, hiddenDots, agy2, web1, web3],
+            "catalog": [
+                "schemaVersion": 1,
+                "catalogVersion": 1,
+                "entries": [
+                    catalogEntry(id: "chatgpt-dots", providerKey: "openai", provider: "OpenAI", product: "chatgpt-dots",
+                                 label: "ChatGPT Dots", serviceLabel: "ChatGPT Dots", defaultVisible: false,
+                                 providerWeight: 100, accountWeight: 300),
+                    catalogEntry(id: "gemini-web", providerKey: "google", provider: "Google", product: "gemini-web",
+                                 label: "Gemini 1", serviceLabel: "Gemini Web", accountNumber: 1,
+                                 providerWeight: 600, accountWeight: 100),
+                    catalogEntry(id: "gemini-web-3", providerKey: "google", provider: "Google", product: "gemini-web",
+                                 label: "Gemini 2", serviceLabel: "Gemini Web", accountNumber: 2,
+                                 providerWeight: 600, accountWeight: 150),
+                    catalogEntry(id: "gemini-web-2", providerKey: "google", provider: "Google", product: "gemini-web",
+                                 label: "Gemini 3", serviceLabel: "Gemini Web", accountNumber: 3,
+                                 providerWeight: 600, accountWeight: 200),
+                    catalogEntry(id: "antigravity-2", providerKey: "antigravity", provider: "Antigravity", product: "antigravity",
+                                 label: "Antigravity 2", serviceLabel: "Antigravity", shortLabel: "Antigravity 2",
+                                 accountNumber: 2, providerWeight: 650, accountWeight: 200)
+                ]
+            ]
+        ]
+        try JSONSerialization.data(withJSONObject: payload).write(to: f.snapshot, options: .atomic)
+
+        let store = f.store()
+        try await store.connectSnapshotSource(f.connection)
+
+        XCTAssertFalse(store.accounts.contains(where: { $0.sourceAccountID == "chatgpt-dots" }))
+        XCTAssertEqual(store.orderedAccounts.map(\.sourceAccountID), ["gemini-web", "gemini-web-3", "gemini-web-2", "antigravity-2"])
+        XCTAssertEqual(store.orderedAccounts.map(\.displayService), ["Gemini Web 1", "Gemini Web 2", "Gemini Web 3", "Antigravity 2"])
+        XCTAssertEqual(store.orderedAccounts.map(\.menuAgentPrefix), ["Gemini Web 1", "Gemini Web 2", "Gemini Web 3", "Antigravity 2"])
+
+        // When a row carries a user-customized displayOrder, it overrides the catalog fallback.
+        web2["displayOrder"] = ["version": 1, "providerKey": "google", "providerWeight": 50, "accountWeight": 10]
+        var customPayload = payload
+        customPayload["accounts"] = [web2, hiddenDots, agy2, web1, web3]
+        try JSONSerialization.data(withJSONObject: customPayload).write(to: f.snapshot, options: .atomic)
+        await store.refresh()
+        XCTAssertEqual(store.orderedAccounts.first?.sourceAccountID, "gemini-web-2")
     }
 
     private func row(_ id: String, service: String? = nil, email: String = "fixture@example.test", at now: Date = Date()) -> [String: Any] {

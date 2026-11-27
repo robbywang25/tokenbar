@@ -144,6 +144,79 @@ final class WidgetSnapshotTests: XCTestCase {
     }
 
     @MainActor
+    func testProjectionFiltersHiddenAndUnsubscribedNonPinnedAndSortsPriorityBeforeTopEightCap() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let store = fixture.store()
+
+        func makeAccount(_ sourceID: String, _ service: String, weight: Int) -> AccountConfig {
+            let key = AccountDisplayOrder.providerKey(provider: service, sourceID: sourceID)
+            return AccountConfig(provider: .snapshot, name: service, method: .snapshotFile, location: "/fixture/unused.json",
+                                 sourceAccountID: sourceID, serviceLabel: service,
+                                 displayOrder: AccountDisplayOrder(providerKey: key, providerWeight: weight, accountWeight: 100))
+        }
+
+        let hidden = makeAccount("gemini-api", "Gemini API", weight: 50)
+        let freeCursor = makeAccount("cursor", "Cursor", weight: 100)
+        let claudePinnedUnsub = makeAccount("claude-2", "Claude Code", weight: 200)
+        let agyPinned = makeAccount("antigravity-2", "Antigravity 2", weight: 650)
+        let lowTodayCN = makeAccount("today-cn", "TodayAI 中国版", weight: 150)
+        let normals = (1...7).map { idx in
+            makeAccount("codex-\(idx)", "Codex", weight: 300 + idx)
+        }
+
+        store.accounts = [hidden, freeCursor, lowTodayCN] + normals + [claudePinnedUnsub, agyPinned]
+        func makeReading(priority: TokenWidgetPriority, unsubscribed: Bool) -> AccountReading {
+            AccountReading(status: .connected, checkedAt: now, lastSuccessAt: now,
+                           windows: [QuotaWindow(id: "weekly", label: "每周", remainingPercent: 55)],
+                           unsubscribed: unsubscribed, widgetPriority: priority)
+        }
+        store.readings[hidden.id] = makeReading(priority: .hidden, unsubscribed: false)
+        store.readings[freeCursor.id] = makeReading(priority: .normal, unsubscribed: true)
+        store.readings[claudePinnedUnsub.id] = makeReading(priority: .pinned, unsubscribed: true)
+        store.readings[agyPinned.id] = makeReading(priority: .pinned, unsubscribed: false)
+        store.readings[lowTodayCN.id] = makeReading(priority: .low, unsubscribed: false)
+        for item in normals {
+            store.readings[item.id] = makeReading(priority: .normal, unsubscribed: false)
+        }
+
+        // Select hidden and low accounts in menu to verify priority tier still wins over selection.
+        store.setMenuQuota(accountID: hidden.id, windowID: "weekly", enabled: true)
+        store.setMenuQuota(accountID: lowTodayCN.id, windowID: "weekly", enabled: true)
+
+        let snapshot = try XCTUnwrap(store.widgetSnapshot(at: now))
+        try snapshot.validate()
+        XCTAssertEqual(snapshot.accounts.count, TokenBarWidgetConstants.maximumDisplayedAccounts)
+        XCTAssertEqual(snapshot.accounts.count, 8)
+        XCTAssertFalse(snapshot.accounts.contains(where: { $0.id == hidden.id }))
+        XCTAssertFalse(snapshot.accounts.contains(where: { $0.id == freeCursor.id }))
+        XCTAssertFalse(snapshot.accounts.contains(where: { $0.id == lowTodayCN.id }), "Low priority must be displaced by 8 pinned+normal accounts")
+        XCTAssertEqual(Array(snapshot.accounts.prefix(2)).map(\.id), [claudePinnedUnsub.id, agyPinned.id])
+        XCTAssertEqual(snapshot.displayOrderedAccounts().map(\.id), snapshot.accounts.map(\.id))
+
+        // Removing two normal accounts lets the low-priority account enter within the 8-account cap after pinned & normal.
+        store.accounts.removeAll { $0.id == normals[5].id || $0.id == normals[6].id }
+        let reduced = try XCTUnwrap(store.widgetSnapshot(at: now))
+        XCTAssertEqual(reduced.accounts.count, 8)
+        XCTAssertEqual(Array(reduced.accounts.prefix(2)).map(\.id), [claudePinnedUnsub.id, agyPinned.id])
+        XCTAssertEqual(reduced.accounts.last?.id, lowTodayCN.id)
+        XCTAssertEqual(reduced.displayOrderedAccounts().last?.id, lowTodayCN.id)
+
+        // Direct TokenBarWidgetSnapshot helpers must also filter hidden/non-pinned unsubscribed and sort pinned -> normal -> low.
+        let syntheticHidden = TokenBarWidgetAccount(id: UUID(), email: nil, provider: "Gemini API", plan: nil,
+            status: .connected, observedAt: now, freshUntil: now.addingTimeInterval(120), metrics: [],
+            urgencyWindow: QuotaUrgencyWindow(label: "每周", remainingPercent: 1, startsAt: now.addingTimeInterval(-3600), resetsAt: now.addingTimeInterval(3600)),
+            widgetPriority: .hidden, unsubscribed: false)
+        let syntheticUnsub = TokenBarWidgetAccount(id: UUID(), email: nil, provider: "Cursor", plan: nil,
+            status: .connected, observedAt: now, freshUntil: now.addingTimeInterval(120), metrics: [],
+            widgetPriority: .normal, unsubscribed: true)
+        let rawSnapshot = TokenBarWidgetSnapshot(generatedAt: now, accounts: [syntheticHidden, syntheticUnsub] + reduced.accounts)
+        XCTAssertEqual(rawSnapshot.displayOrderedAccounts().count, 8)
+        XCTAssertFalse(rawSnapshot.displayOrderedAccounts().contains(where: { $0.id == syntheticHidden.id || $0.id == syntheticUnsub.id }))
+        XCTAssertFalse(rawSnapshot.rankedAccounts(at: now).contains(where: { $0.id == syntheticHidden.id || $0.id == syntheticUnsub.id }))
+    }
+
+    @MainActor
     func testFreshnessExpiresAtSourceOrVisibleResetBoundaryWithoutFresheningHistory() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

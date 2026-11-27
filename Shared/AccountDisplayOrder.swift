@@ -22,7 +22,7 @@ public struct AccountDisplayOrder: Codable, Equatable, Sendable {
         "chatgpt-dots": 300, "chatgpt-chat": 400, "claude-1": 100, "claude-2": 200,
         "grok": 100, "grok-bot": 200, "cursor": 100, "today-cn": 100, "today-global": 200,
         "gemini-web": 100, "gemini-web-3": 150, "gemini-web-2": 200, "gemini-cli": 300, "gemini-cli-2": 400,
-        "gemini-api": 500, "gemini-api-2": 600, "antigravity": 100]
+        "gemini-api": 500, "gemini-api-2": 600, "antigravity": 100, "antigravity-2": 200]
 
     public var isValid: Bool {
         version == 1 && Self.providerWeights[providerKey] != nil &&
@@ -33,16 +33,35 @@ public struct AccountDisplayOrder: Codable, Equatable, Sendable {
         value.hasPrefix("god:") ? String(value.dropFirst(4)) : value
     }
 
+    private static func strippingTrailingNumber(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let range = trimmed.range(of: " [0-9]{1,3}\\z", options: .regularExpression) else { return trimmed }
+        return String(trimmed[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     public static func providerKey(product: String? = nil, provider: String? = nil, sourceID: String = "") -> String {
-        let product = product?.lowercased() ?? "", provider = provider?.lowercased() ?? ""
+        let product = product?.lowercased() ?? ""
+        let rawProvider = provider?.lowercased() ?? ""
+        let baseProvider = strippingTrailingNumber(rawProvider)
         let id = Self.sourceID(sourceID)
-        if product == "antigravity" || provider == "antigravity" || id.lowercased() == "antigravity" { return "antigravity" }
-        if ["gemini-cli", "gemini-web", "gemini-api"].contains(product) || ["google", "gemini", "gemini cli", "gemini web", "gemini api", "antigravity cli", "geminicli", "geminiweb", "geminiapi", "ag cli"].contains(provider) { return "google" }
-        if ["today-cn", "today-global"].contains(product) || provider.hasPrefix("todayai") { return "today" }
-        if product == "cursor" || provider == "cursor" { return "cursor" }
-        if product == "claude" || ["anthropic", "claude", "claude code", "claudecode"].contains(provider) { return "anthropic" }
-        if ["grok", "grok-bot"].contains(product) || ["xai", "x.ai", "grok", "grok build", "grok bot", "grokbot", "grokbuild"].contains(provider) { return "xai" }
-        if ["codex", "chatgpt-dots", "chatgpt-chat"].contains(product) || ["openai", "codex", "chatgpt", "openai codex", "openaicodex"].contains(provider) { return "openai" }
+        let lowerID = id.lowercased()
+        if ["google", "gemini", "gemini cli", "gemini web", "gemini api", "antigravity cli", "geminicli", "geminiweb", "geminiapi", "ag cli"].contains(rawProvider)
+            || ["google", "gemini", "gemini cli", "gemini web", "gemini api", "antigravity cli", "geminicli", "geminiweb", "geminiapi", "ag cli"].contains(baseProvider) {
+            return "google"
+        }
+        if product == "antigravity" || rawProvider == "antigravity" || baseProvider == "antigravity"
+            || lowerID == "antigravity" || lowerID.hasPrefix("antigravity-") {
+            return "antigravity"
+        }
+        if ["gemini-cli", "gemini-web", "gemini-api"].contains(product) { return "google" }
+        if ["today-cn", "today-global"].contains(product) || rawProvider.hasPrefix("todayai") || baseProvider.hasPrefix("todayai") { return "today" }
+        if product == "cursor" || rawProvider == "cursor" || baseProvider == "cursor" { return "cursor" }
+        if product == "claude" || ["anthropic", "claude", "claude code", "claudecode"].contains(rawProvider)
+            || ["anthropic", "claude", "claude code", "claudecode"].contains(baseProvider) { return "anthropic" }
+        if ["grok", "grok-bot"].contains(product) || ["xai", "x.ai", "grok", "grok build", "grok bot", "grokbot", "grokbuild"].contains(rawProvider)
+            || ["xai", "x.ai", "grok", "grok build", "grok bot", "grokbot", "grokbuild"].contains(baseProvider) { return "xai" }
+        if ["codex", "chatgpt-dots", "chatgpt-chat"].contains(product) || ["openai", "codex", "chatgpt", "openai codex", "openaicodex"].contains(rawProvider)
+            || ["openai", "codex", "chatgpt", "openai codex", "openaicodex"].contains(baseProvider) { return "openai" }
         // Older local snapshot producers may supply only their stable slot ID.
         if id == "codex" || id.hasPrefix("codex-") || id.hasPrefix("chatgpt-") { return "openai" }
         if id == "claude" || id.hasPrefix("claude-") { return "anthropic" }
@@ -62,7 +81,7 @@ public struct AccountDisplayOrder: Codable, Equatable, Sendable {
         isValid && self.providerKey == providerKey ? self : Self.fallback(providerKey: providerKey, sourceID: sourceID)
     }
 
-    public static func parse(_ value: Any?, providerKey: String, sourceID: String) -> Self {
+    public static func parseIfValid(_ value: Any?, providerKey: String) -> Self? {
         func integer(_ value: Any?) -> Int? {
             guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(),
                   n.doubleValue.isFinite, n.doubleValue.rounded() == n.doubleValue,
@@ -72,10 +91,15 @@ public struct AccountDisplayOrder: Codable, Equatable, Sendable {
         guard let raw = value as? [String: Any], let version = integer(raw["version"]),
               let key = raw["providerKey"] as? String,
               let providerWeight = integer(raw["providerWeight"]), let accountWeight = integer(raw["accountWeight"]) else {
-            return fallback(providerKey: providerKey, sourceID: sourceID)
+            return nil
         }
-        return Self(version: version, providerKey: key, providerWeight: providerWeight, accountWeight: accountWeight)
-            .resolved(providerKey: providerKey, sourceID: sourceID)
+        let parsed = Self(version: version, providerKey: key, providerWeight: providerWeight, accountWeight: accountWeight)
+        guard parsed.isValid && parsed.providerKey == providerKey else { return nil }
+        return parsed
+    }
+
+    public static func parse(_ value: Any?, providerKey: String, sourceID: String) -> Self {
+        parseIfValid(value, providerKey: providerKey) ?? fallback(providerKey: providerKey, sourceID: sourceID)
     }
 
     /// Group first so inconsistent metadata can never split one supplier.

@@ -37,12 +37,14 @@ struct ResetCalendarModel {
     let missingWindows: Int
 
     init(accounts: [AccountConfig], readings: [UUID: AccountReading], history: ResetCalendarHistory = ResetCalendarHistory(), now: Date,
-         identity: (AccountConfig) -> String) {
+         codingOnly: Bool = false, identity: (AccountConfig) -> String) {
         var events: [ResetCalendarEvent] = []
         var missingAccounts = 0, missingWindows = 0
         var seenAccounts = Set<UUID>()
         for account in accounts where account.enabled && seenAccounts.insert(account.id).inserted {
             let reading = readings[account.id]
+            if reading?.calendarEligible == false || (reading?.calendarEligible == nil && reading?.category == "api") { continue }
+            if codingOnly && !account.isCoding(reading: reading) { continue }
             if reading?.visibleWindows.isEmpty ?? true { missingAccounts += 1 }
             var seen = Set<ResetCalendarEvent.ID>()
             func append(_ id: ResetCalendarEvent.ID, label: String, reset: Date, status: ResetCalendarEvent.Status) {

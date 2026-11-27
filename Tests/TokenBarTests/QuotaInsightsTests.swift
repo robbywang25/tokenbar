@@ -137,4 +137,42 @@ final class QuotaInsightsTests: XCTestCase {
         state.update(accounts: [account], readings: [account.id: reading(5, at: now)], preferences: prefs, now: now)
         XCTAssertEqual(state.events.count, 1)
     }
+
+    @MainActor
+    func testCodingOnlyFilteringPersistsLocallyWithoutSyncingAndDecodesLegacyPreferences() throws {
+        let legacyData = Data(#"{"favorites":[],"filter":"all","thresholds":[20,10],"expiryHours":24,"quietStart":22,"quietEnd":8,"passiveNotices":false}"#.utf8)
+        let decoded = try JSONDecoder().decode(QuotaInsightPreferences.self, from: legacyData)
+        XCTAssertFalse(decoded.codingOnly)
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "QuotaInsights.CodingOnly." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+
+        let store = AppStore(directory: root, startTimers: false, defaults: defaults)
+        let codex = AccountConfig(provider: .snapshot, name: "Codex 1", method: .snapshotFile, location: "/codex.json", sourceAccountID: "codex-1", serviceLabel: "Codex 1")
+        let agy = AccountConfig(provider: .snapshot, name: "Antigravity 2", method: .snapshotFile, location: "/agy.json", sourceAccountID: "antigravity-2", serviceLabel: "Antigravity 2")
+        let geminiWeb = AccountConfig(provider: .snapshot, name: "Gemini Web 1", method: .snapshotFile, location: "/web.json", sourceAccountID: "gemini-web", serviceLabel: "Gemini Web 1")
+        let today = AccountConfig(provider: .snapshot, name: "TodayAI 中国版", method: .snapshotFile, location: "/today.json", sourceAccountID: "today-cn", serviceLabel: "TodayAI 中国版")
+        let api = AccountConfig(provider: .snapshot, name: "Gemini API", method: .snapshotFile, location: "/api.json", sourceAccountID: "gemini-api", serviceLabel: "Gemini API")
+
+        store.accounts = [codex, agy, geminiWeb, today, api]
+        var codexReading = reading(80, at: now); codexReading.category = "coding"
+        var agyReading = reading(80, at: now); agyReading.category = "coding"
+        var webReading = reading(80, at: now); webReading.category = "chat"
+        var todayReading = reading(80, at: now); todayReading.category = "chat"
+        var apiReading = reading(80, at: now); apiReading.category = "api"
+        store.readings = [codex.id: codexReading, agy.id: agyReading, geminiWeb.id: webReading, today.id: todayReading, api.id: apiReading]
+
+        XCTAssertEqual(store.visibleDashboardAccounts.count, 5)
+        var prefs = store.insightPreferences; prefs.codingOnly = true
+        store.updateInsightPreferences(prefs)
+        XCTAssertEqual(Set(store.visibleDashboardAccounts.map(\.id)), [codex.id, agy.id])
+
+        store.setCalendarCodingOnly(true)
+        let restored = AppStore(directory: root, startTimers: false, defaults: defaults)
+        XCTAssertTrue(restored.insightPreferences.codingOnly)
+        XCTAssertTrue(restored.calendarCodingOnly)
+        XCTAssertFalse(try store.exportCloudRecords().keys.contains { $0.lowercased().contains("coding") })
+    }
 }

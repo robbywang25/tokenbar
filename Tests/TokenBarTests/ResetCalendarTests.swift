@@ -196,4 +196,34 @@ final class ResetCalendarTests: XCTestCase {
         XCTAssertTrue(ResetCalendarModel(accounts: [disabled], readings: [:], history: history, now: now, identity: { $0.name }).events.isEmpty)
         XCTAssertFalse(history.accounts[disabled.id]?.archived.isEmpty ?? true)
     }
+
+    func testCalendarEligibleAndCodingOnlyFilterAccountsCleanly() {
+        func make(_ id: String, _ service: String, product: String, category: String, eligible: Bool?) -> (AccountConfig, AccountReading) {
+            let acc = AccountConfig(provider: .snapshot, name: id, method: .snapshotFile,
+                                    location: "/synthetic.json", sourceAccountID: id, serviceLabel: service)
+            var r = reading([window(id + "-w", reset: now.addingTimeInterval(3600))])
+            r.product = product
+            r.category = category
+            r.calendarEligible = eligible
+            return (acc, r)
+        }
+        let codex = make("codex-1", "Codex 1", product: "codex", category: "coding", eligible: true)
+        let agy = make("antigravity-2", "Antigravity 2", product: "antigravity", category: "coding", eligible: true)
+        let geminiWeb = make("gemini-web", "Gemini Web 1", product: "gemini-web", category: "chat", eligible: true)
+        let today = make("today-cn", "TodayAI 中国版", product: "today-cn", category: "chat", eligible: true)
+        let geminiAPI = make("gemini-api", "Gemini API", product: "gemini-api", category: "api", eligible: false)
+        let hiddenChat = make("chatgpt-dots", "ChatGPT Dots", product: "chatgpt-dots", category: "chat", eligible: false)
+        var emptyAPI = make("gemini-api-2", "Gemini API 2", product: "gemini-api", category: "api", eligible: false)
+        emptyAPI.1.windows = []
+
+        let accounts = [codex.0, agy.0, geminiWeb.0, today.0, geminiAPI.0, hiddenChat.0, emptyAPI.0]
+        let readings = Dictionary(uniqueKeysWithValues: [codex, agy, geminiWeb, today, geminiAPI, hiddenChat, emptyAPI].map { ($0.0.id, $0.1) })
+
+        let full = ResetCalendarModel(accounts: accounts, readings: readings, now: now, codingOnly: false, identity: { $0.name })
+        XCTAssertEqual(Set(full.events.map(\.accountName)), ["codex-1", "antigravity-2", "gemini-web", "today-cn"])
+        XCTAssertEqual(full.missingAccounts, 0, "calendarEligible == false accounts must not count as missing calendar accounts")
+
+        let coding = ResetCalendarModel(accounts: accounts, readings: readings, now: now, codingOnly: true, identity: { $0.name })
+        XCTAssertEqual(Set(coding.events.map(\.accountName)), ["codex-1", "antigravity-2"])
+    }
 }

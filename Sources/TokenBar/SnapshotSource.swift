@@ -36,7 +36,9 @@ struct ServerTokenCatalogEntry: Equatable, Sendable {
     var product: String
     var label: String
     var serviceLabel: String
+    var shortLabel: String? = nil
     var accountNumber: Int?
+    var displayOrder: AccountDisplayOrder? = nil
     var category: String
     var subscriptionState: String?
     var unsubscribed: Bool
@@ -60,7 +62,7 @@ struct ServerTokenCatalog: Equatable, Sendable {
               let rawEntries = dict["entries"] as? [[String: Any]],
               rawEntries.count <= 1_000 else { return nil }
         var entries: [ServerTokenCatalogEntry] = []
-        for item in rawEntries {
+        for (index, item) in rawEntries.enumerated() {
             guard let id = item["id"] as? String, !id.isEmpty, id.count <= 120,
                   let providerKey = item["providerKey"] as? String,
                   let provider = item["provider"] as? String,
@@ -74,9 +76,15 @@ struct ServerTokenCatalog: Equatable, Sendable {
                   let defaultVisible = bool(item["defaultVisible"]),
                   let widgetEligible = bool(item["widgetEligible"]),
                   let calendarEligible = bool(item["calendarEligible"]) else { continue }
+            let normalizedKey = AccountDisplayOrder.providerWeights[providerKey] != nil ? providerKey : "other"
+            let catalogOrder = AccountDisplayOrder.parseIfValid(item["displayOrder"], providerKey: normalizedKey)
+                ?? AccountDisplayOrder(providerKey: normalizedKey,
+                                       providerWeight: AccountDisplayOrder.providerWeights[normalizedKey]!,
+                                       accountWeight: (index + 1) * 100)
             entries.append(ServerTokenCatalogEntry(
                 id: id, providerKey: providerKey, provider: provider, product: product,
-                label: label, serviceLabel: serviceLabel, accountNumber: integer(item["accountNumber"]),
+                label: label, serviceLabel: serviceLabel, shortLabel: safeText(item["shortLabel"]),
+                accountNumber: integer(item["accountNumber"]), displayOrder: catalogOrder,
                 category: category, subscriptionState: item["subscriptionState"] as? String,
                 unsubscribed: unsubscribed, defaultVisible: defaultVisible,
                 widgetPriority: priority, widgetEligible: widgetEligible,
@@ -86,13 +94,24 @@ struct ServerTokenCatalog: Equatable, Sendable {
                                   generatedAt: dict["generatedAt"] as? String, entries: entries)
     }
 
-    private static func integer(_ value: Any?) -> Int? {
+    static func safeText(_ value: Any?) -> String? {
+        guard let raw = value as? String else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (1...64).contains(trimmed.count),
+              trimmed.range(of: "\\A[\\p{L}\\p{N} .·（）()_+/-]+\\z", options: .regularExpression) != nil,
+              trimmed.range(of: "secret|bearer|eyJ|sk-", options: [.caseInsensitive, .regularExpression]) == nil else {
+            return nil
+        }
+        return trimmed
+    }
+
+    static func integer(_ value: Any?) -> Int? {
         guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(),
               n.doubleValue.isFinite, n.doubleValue.rounded() == n.doubleValue else { return nil }
         return n.intValue
     }
 
-    private static func bool(_ value: Any?) -> Bool? {
+    static func bool(_ value: Any?) -> Bool? {
         guard let n = value as? NSNumber, CFGetTypeID(n) == CFBooleanGetTypeID() else { return nil }
         return n.boolValue
     }
@@ -104,8 +123,10 @@ struct SnapshotCatalog {
         var serviceLabel: String
         var reading: AccountReading
         var displayOrder: AccountDisplayOrder? = nil
+        var defaultVisible: Bool = true
 
         var shouldDiscover: Bool {
+            guard defaultVisible else { return false }
             // Empty slots and unsupported products aren't accounts. An existing
             // account is retained even if its source later becomes unavailable.
             if reading.status == .notConfigured || reading.status == .unsupported {
@@ -154,21 +175,46 @@ struct SnapshotCatalog {
                 reading = AccountReading(status: .unavailable, checkedAt: now, lastSuccessAt: nil,
                     detail: ProviderError.invalidData.message, reason: "invalid_data")
             }
-            if let meta = catalogByID[id] {
+            let meta = catalogByID[id]
+            if let meta {
                 if reading.category == nil { reading.category = meta.category }
                 if reading.unsubscribed == nil { reading.unsubscribed = meta.unsubscribed }
                 if reading.widgetPriority == nil { reading.widgetPriority = meta.widgetPriority }
                 if reading.calendarEligible == nil { reading.calendarEligible = meta.calendarEligible }
             }
-            let label = serviceLabel(row, id: id)
-            let key = AccountDisplayOrder.providerKey(product: row["product"] as? String, provider: row["provider"] as? String ?? label, sourceID: id)
-            let displayOrder = AccountDisplayOrder.parse(row["displayOrder"], providerKey: key, sourceID: id)
-            entries.append(Entry(id: id, serviceLabel: label, reading: reading, displayOrder: displayOrder))
+            let defaultVisible = meta?.defaultVisible ?? ServerTokenCatalog.bool(row["defaultVisible"]) ?? true
+            let label = serviceLabel(row, id: id, catalogEntry: meta)
+            let rowProviderKey = AccountDisplayOrder.providerKey(product: row["product"] as? String, provider: row["provider"] as? String ?? label, sourceID: id)
+            let key = rowProviderKey == "other" ? (meta?.providerKey ?? "other") : rowProviderKey
+            let displayOrder = AccountDisplayOrder.parseIfValid(row["displayOrder"], providerKey: key)
+                ?? meta?.displayOrder
+                ?? AccountDisplayOrder.fallback(providerKey: key, sourceID: id)
+            reading.displayOrder = displayOrder
+            entries.append(Entry(id: id, serviceLabel: label, reading: reading, displayOrder: displayOrder, defaultVisible: defaultVisible))
+        }
+        if parsedServerCatalog != nil {
+            entries = AccountDisplayOrder.sorted(entries, order: {
+                $0.displayOrder ?? AccountDisplayOrder.fallback(providerKey: "other", sourceID: $0.id)
+            }, stableID: \.id)
         }
         return SnapshotCatalog(entries: entries, serverCatalog: parsedServerCatalog)
     }
 
-    private static func serviceLabel(_ row: [String: Any], id: String) -> String {
+    private static func serviceLabel(_ row: [String: Any], id: String, catalogEntry: ServerTokenCatalogEntry? = nil) -> String {
+        if let shortLabel = ServerTokenCatalog.safeText(catalogEntry?.shortLabel) ?? ServerTokenCatalog.safeText(row["shortLabel"]) {
+            return shortLabel
+        }
+        let base = ServerTokenCatalog.safeText(catalogEntry?.serviceLabel) ?? baseServiceLabel(row, id: id)
+        let number = catalogEntry?.accountNumber ?? ServerTokenCatalog.integer(row["accountNumber"])
+            ?? (id.lowercased() == "antigravity-2" && base.caseInsensitiveCompare("Antigravity") == .orderedSame ? 2 : nil)
+        if let number, number >= 1, !base.hasSuffix(" \(number)") {
+            let numbered = "\(base) \(number)"
+            if numbered.count <= 64 { return numbered }
+        }
+        return base
+    }
+
+    private static func baseServiceLabel(_ row: [String: Any], id: String) -> String {
         for field in ["serviceLabel", "provider", "product"] {
             if let label = row[field] as? String, (1...64).contains(label.count),
                label.range(of: "\\A[\\p{L}\\p{N} .·()_+/-]+\\z", options: .regularExpression) != nil {
@@ -176,12 +222,15 @@ struct SnapshotCatalog {
             }
         }
         // Display fallback for older producers. This is not an account allowlist.
-        if id == "antigravity" { return "Antigravity" }
+        if id == "antigravity" || id.hasPrefix("antigravity-") { return "Antigravity" }
         if id == "codex" || id.hasPrefix("codex-") { return "Codex" }
         if id == "claude" || id.hasPrefix("claude-") { return "Claude Code" }
         if id == "grok-bot" { return "Grok Bot" }
         if id == "grok" || id.hasPrefix("grok-build") { return "Grok Build" }
         if id == "cursor" || id.hasPrefix("cursor-") { return "Cursor" }
+        if id == "gemini-web" || id.hasPrefix("gemini-web-") { return "Gemini Web" }
+        if id == "gemini-cli" || id.hasPrefix("gemini-cli-") { return "Gemini CLI" }
+        if id == "gemini-api" || id.hasPrefix("gemini-api-") { return "Gemini API" }
         return String(id.prefix(64))
     }
 }

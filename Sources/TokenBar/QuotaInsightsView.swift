@@ -1,5 +1,29 @@
 import SwiftUI
 
+struct CodingOnlyPillToggle: View {
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button {
+            isOn.toggle()
+        } label: {
+            Text("只看 Coding")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(isOn ? Color.white : Color.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(isOn ? Color.accentColor : Color.primary.opacity(0.06), in: Capsule())
+                .overlay(Capsule().strokeBorder(isOn ? Color.accentColor : Color.primary.opacity(0.10), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .accessibilityLabel("只看 Coding")
+        .accessibilityValue(isOn ? "已开启" : "已关闭")
+        .accessibilityAddTraits(isOn ? [.isSelected] : [])
+        .help("仅显示 Coding 类别账号")
+    }
+}
+
 struct QuotaInsightsView: View {
     @ObservedObject var store: AppStore
     @State private var settings = false
@@ -13,13 +37,16 @@ struct QuotaInsightsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
+            HStack(spacing: 6) {
                 Picker("账号筛选", selection: Binding(get: { store.insightPreferences.filter }, set: { filter in
                     var value = store.insightPreferences; value.filter = filter; store.updateInsightPreferences(value)
                 })) {
                     ForEach(QuotaAccountFilter.allCases, id: \.rawValue) { filter in Text(filter.title).tag(filter) }
                 }
                 .pickerStyle(.segmented).labelsHidden()
+                CodingOnlyPillToggle(isOn: Binding(get: { store.insightPreferences.codingOnly }, set: { codingOnly in
+                    var value = store.insightPreferences; value.codingOnly = codingOnly; store.updateInsightPreferences(value)
+                }))
                 Button {
                     inbox.toggle(); if inbox { store.markInsightsRead() }
                 } label: {

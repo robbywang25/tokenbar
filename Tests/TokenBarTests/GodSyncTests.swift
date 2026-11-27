@@ -280,6 +280,88 @@ final class GodSyncTests: XCTestCase {
         }
     }
 
+    func testEncodedSyncPatchOmitsCatalogOnlyAndLocalReadingFields() throws {
+        let now = Date(timeIntervalSince1970: 1_793_145_600)
+        var reading = AccountReading(
+            status: .connected,
+            checkedAt: now,
+            lastSuccessAt: now,
+            windows: [QuotaWindow(id: "weekly", label: "每周", remainingPercent: 72, resetsAt: now.addingTimeInterval(3600))],
+            credits: 100,
+            unlimitedCredits: false,
+            resetCardsAvailable: 1,
+            resetCards: [ResetCard(status: "available", expiresAt: now.addingTimeInterval(7200), startsAt: now, grantedAt: now, resetType: "weekly")],
+            name: "Private Name",
+            email: "fixture@example.test",
+            detail: "Private Detail",
+            identityKey: String(repeating: "a", count: 64),
+            planName: "Pro",
+            planMultiplier: 10,
+            sourceCollectedAt: now,
+            sourceCollectedAtPresent: true,
+            reason: "no_usage_data",
+            retryAt: nil,
+            resetHistory: [QuotaResetRecord(id: "weekly", label: "每周", group: "default", resetsAt: now.addingTimeInterval(-3600))],
+            resetHistoryIdentity: SyncFixture.historyEpoch,
+            product: "antigravity",
+            displayOrder: .init(providerKey: "antigravity", providerWeight: 650, accountWeight: 100),
+            category: "coding",
+            unsubscribed: false,
+            widgetPriority: .pinned,
+            calendarEligible: true,
+            renewal: TokenRenewalSummary(status: "active", autoRenew: true, nextDate: "2026-12-01"),
+            usageMetrics: [UsageMetric(id: "requests", label: "请求", value: 12, unit: "requests",
+                                       startsAt: now.addingTimeInterval(-3600), endsAt: now, observedAt: now)],
+            reportedResetCards: ReportedResetCards(available: 1, detailsAt: now, provenance: .officialWeb, cards: [])
+        )
+        reading.windows[0].usageTrend = QuotaUsageTrend(status: "ready", from: now.addingTimeInterval(-3600), to: now,
+            bucketSeconds: 300, balancePoints: [QuotaBalancePoint(at: now, remaining: 72, connect: false)],
+            totalUsed: 1, coverageSeconds: 60, observedAt: now)
+
+        let account = AccountConfig(provider: .snapshot, name: "Antigravity 2", method: .snapshotFile,
+                                    location: "/tmp/unused.json", sourceAccountID: "antigravity", serviceLabel: "Antigravity 2",
+                                    displayOrder: .init(providerKey: "antigravity", providerWeight: 650, accountWeight: 100))
+        let record = try GodSyncProjection.record(account: account, key: "god:antigravity", reading: reading)
+        var dirtyObject = record.object!
+        var dirtyReading = dirtyObject["reading"]!.object!
+        dirtyReading["category"] = .string("coding")
+        dirtyReading["unsubscribed"] = .bool(true)
+        dirtyReading["widgetPriority"] = .string("pinned")
+        dirtyReading["calendarEligible"] = .bool(true)
+        dirtyReading["renewal"] = .object(["status": .string("active")])
+        dirtyObject["reading"] = .object(dirtyReading)
+
+        var journal = GodSyncJournal(remote: GodSyncDocument(revision: 4), baseline: [:],
+                                     pending: ["a:god:antigravity": .object(dirtyObject)], initialized: true)
+        let patchData = try JSONEncoder().encode(journal.patch())
+        let patchJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: patchData) as? [String: Any])
+        let operations = try XCTUnwrap(patchJSON["operations"] as? [[String: Any]])
+        let accountObject = try XCTUnwrap(operations.first?["value"] as? [String: Any])
+        let readingObject = try XCTUnwrap(accountObject["reading"] as? [String: Any])
+
+        for forbidden in ["category", "unsubscribed", "widgetPriority", "calendarEligible", "renewal",
+                          "product", "displayOrder", "usageMetrics", "reportedResetCards", "name", "detail", "resetHistory"] {
+            XCTAssertNil(readingObject[forbidden], "Forbidden sync reading key present: \(forbidden)")
+        }
+        XCTAssertNil(readingObject["reason"])
+        let allowedReadingKeys: Set<String> = [
+            "status", "checkedAt", "lastSuccessAt", "windows", "credits", "unlimitedCredits", "email",
+            "planName", "planMultiplier", "identityKey", "resetHistoryIdentity", "sourceCollectedAt",
+            "sourceCollectedAtPresent", "reason", "retryAt", "resetCardsAvailable", "resetCards"
+        ]
+        XCTAssertTrue(Set(readingObject.keys).isSubset(of: allowedReadingKeys))
+        XCTAssertNoThrow(try GodSyncProjection.decodeReading(try XCTUnwrap(record["reading"])))
+
+        journal.pending["a:god:antigravity"] = record
+        let cleanData = try JSONEncoder().encode(journal.patch())
+        let cleanPatch = try XCTUnwrap(JSONSerialization.jsonObject(with: cleanData) as? [String: Any])
+        let cleanOps = try XCTUnwrap(cleanPatch["operations"] as? [[String: Any]])
+        let cleanReading = try XCTUnwrap((cleanOps.first?["value"] as? [String: Any])?["reading"] as? [String: Any])
+        for forbidden in ["category", "unsubscribed", "widgetPriority", "calendarEligible", "renewal"] {
+            XCTAssertNil(cleanReading[forbidden])
+        }
+    }
+
     private func preference(_ name: String, _ value: SyncJSON) -> SyncJSON { .object(["kind": .string("preference"), "name": .string(name), "value": value]) }
 }
 

@@ -9,7 +9,7 @@ struct ResetCalendarView: View {
         timeZoneID == "local" ? .autoupdatingCurrent : TimeZone(identifier: timeZoneID) ?? .autoupdatingCurrent
     }
     private var calendar: Calendar { ResetCalendarDates.calendar(timeZone: timeZone) }
-    private var model: ResetCalendarModel { store.calendarModel() }
+    private var model: ResetCalendarModel { store.calendarModel(codingOnly: store.calendarCodingOnly) }
 
     var body: some View {
         let model = model
@@ -26,9 +26,13 @@ struct ResetCalendarView: View {
                     .accessibilityLabel("下一个月").help("下一个月")
             }
             .buttonStyle(.borderless)
-            HStack {
+            HStack(spacing: 8) {
                 Text(model.summary(in: monthEvents)).font(.caption).foregroundStyle(.secondary)
                 Spacer(minLength: 4)
+                CodingOnlyPillToggle(isOn: Binding(
+                    get: { store.calendarCodingOnly },
+                    set: { store.setCalendarCodingOnly($0) }
+                ))
                 Menu {
                     Picker("日历时区", selection: Binding(get: { store.calendarTimeZoneID }, set: { store.setCalendarTimeZone($0) })) {
                         Text("本机时间").tag("local")

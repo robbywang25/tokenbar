@@ -10,10 +10,24 @@ extension AppStore {
         // for each window makes a 30-account projection unnecessarily quadratic.
         let selection = selectedMenuMetricIDs
         let selected = Set(availableMenuMetrics.filter { selection.contains($0.id) }.map(\.accountID))
-        let enabled = orderedAccounts.filter(\.enabled)
-        let ordered = enabled.filter { selected.contains($0.id) } + enabled.filter { !selected.contains($0.id) }
-        let chosen = AccountDisplayOrder.sorted(Array(ordered.prefix(TokenBarWidgetConstants.maximumAccounts)),
-            order: { $0.accountDisplayOrder }, stableID: { $0.orderingSourceID })
+        let eligible = orderedAccounts.filter { account in
+            guard account.enabled else { return false }
+            let reading = readings[account.id]
+            let priority = reading?.widgetPriority ?? .normal
+            return priority.isEligibleForWidget(unsubscribed: reading?.unsubscribed)
+        }
+        let prioritized = eligible.enumerated().sorted { first, second in
+            let leftPriority = (readings[first.element.id]?.widgetPriority ?? .normal).priorityRank
+            let rightPriority = (readings[second.element.id]?.widgetPriority ?? .normal).priorityRank
+            if leftPriority != rightPriority { return leftPriority < rightPriority }
+            let leftSelected = selected.contains(first.element.id), rightSelected = selected.contains(second.element.id)
+            if leftSelected != rightSelected { return leftSelected && !rightSelected }
+            return first.offset < second.offset
+        }.map(\.element)
+        let capped = Array(prioritized.prefix(TokenBarWidgetConstants.maximumDisplayedAccounts))
+        let chosen = Dictionary(grouping: capped) { (readings[$0.id]?.widgetPriority ?? .normal).priorityRank }
+            .sorted { $0.key < $1.key }
+            .flatMap { AccountDisplayOrder.sorted($0.value, order: { $0.accountDisplayOrder }, stableID: { $0.orderingSourceID }) }
         let rows = chosen.map { account in
             widgetAccount(account, at: date, selection: selection)
         }
@@ -35,7 +49,7 @@ extension AppStore {
         }()
         let provider = Self.widgetText(account.menuAgentPrefix, maximum: 16) ?? "JSON"
         let rawPlan = SubscriptionPlanLabel.displayName(planName: reading?.planName, multiplier: reading?.planMultiplier,
-                                                      isCodex: account.provider == .codex || account.menuAgentPrefix == "Codex")
+                                                      isCodex: account.isCodexService)
         let plan = rawPlan.flatMap { Self.widgetText($0, maximum: 80) }
         let status = reading.map { TokenBarWidgetStatus(rawValue: $0.displayStatus(at: date).rawValue) ?? .unavailable } ?? .notConfigured
         var freshUntil: Date?
@@ -103,7 +117,8 @@ extension AppStore {
                                      status: status, observedAt: observed, freshUntil: freshUntil,
                                      metrics: metrics, resetCards: resetCards, urgencyWindow: urgencyWindow,
                                      rankingObservedAt: rankingObserved, rankingObservedAtPresent: true,
-                                     resetCardExpirations: resetCardExpirations, displayOrder: account.accountDisplayOrder)
+                                     resetCardExpirations: resetCardExpirations, displayOrder: account.accountDisplayOrder,
+                                     widgetPriority: reading?.widgetPriority, unsubscribed: reading?.unsubscribed)
     }
 
     private static func widgetDate(_ date: Date) -> Bool {

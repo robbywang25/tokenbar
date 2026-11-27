@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import TokenBarWidgetShared
 
 enum DashboardSection: String {
     case accounts, calendar, analysis
@@ -67,7 +68,7 @@ struct DashboardView: View {
                     } else {
                         QuotaInsightsView(store: store)
                         if store.visibleDashboardAccounts.isEmpty {
-                            Text(store.insightPreferences.filter == .favorites ? "还没有关注账号。" : "当前没有需要处理的账号。")
+                            Text(emptyFilteredMessage)
                                 .foregroundStyle(.secondary).padding(.vertical, 20)
                         }
                         ForEach(store.visibleDashboardAccounts) { account in
@@ -693,28 +694,71 @@ struct DashboardView: View {
         return percent <= 10 ? .red : percent <= 25 ? .orange : .accentColor
     }
 
+    private var emptyFilteredMessage: String {
+        switch store.insightPreferences.filter {
+        case .favorites: return "还没有关注账号。"
+        case .attention: return "当前没有需要处理的账号。"
+        case .all: return store.insightPreferences.codingOnly ? "当前没有 Coding 账号。" : "暂无账号。"
+        }
+    }
+
     private func serviceSummary(_ account: AccountConfig, reading: AccountReading?) -> String {
         guard let plan = SubscriptionPlanLabel.displayName(planName: reading?.planName,
                                                           multiplier: reading?.planMultiplier,
-                                                          isCodex: account.menuAgentPrefix == "Codex") else {
+                                                          isCodex: account.isCodexService) else {
             return account.displayService
         }
         return account.displayService + " · " + plan
     }
 
     private func accountPresentation(_ account: AccountConfig) -> (symbol: String, color: Color) {
-        switch account.displayService {
-        case "Codex": return ("terminal", .primary)
-        case "Claude Code": return ("sparkle", Color(red: 0.73, green: 0.43, blue: 0.30))
-        case "Grok Build": return ("bolt", .purple)
-        case "Grok Bot", "GrokBot": return ("bubble.left.and.bubble.right", .indigo)
-        case "Cursor": return ("cursorarrow", .primary)
+        Self.accountPresentation(for: account, product: store.readings[account.id]?.product)
+    }
+
+    static func accountPresentation(for account: AccountConfig, product: String? = nil) -> (symbol: String, color: Color) {
+        let baseService = AccountConfig.splitNumberedLabel(account.displayService).base
+        switch baseService {
+        case "Codex", "ChatGPT", "OpenAI":
+            return ("terminal", .primary)
+        case "Claude Code", "Claude", "Anthropic":
+            return ("sparkle", Color(red: 0.73, green: 0.43, blue: 0.30))
+        case "Grok Build":
+            return ("bolt", .purple)
+        case "Grok Bot", "GrokBot":
+            return ("bubble.left.and.bubble.right", .indigo)
+        case "Cursor":
+            return ("cursorarrow", .primary)
+        case "Gemini CLI", "Antigravity CLI", "AG CLI":
+            return ("chevron.left.forwardslash.chevron.right", Color(red: 0.259, green: 0.522, blue: 0.957))
+        case "Gemini API":
+            return ("cpu", Color(red: 0.259, green: 0.522, blue: 0.957))
+        case "Google", "Gemini", "Gemini Web":
+            return ("sparkles", Color(red: 0.259, green: 0.522, blue: 0.957))
+        case "Antigravity":
+            return ("diamond", Color(red: 0.486, green: 0.227, blue: 0.929))
+        case "TodayAI", "TodayAI 中国版", "TodayAI 全球版":
+            return ("sun.max", Color(red: 0.055, green: 0.647, blue: 0.914))
         default:
-            switch account.provider {
-            case .codex: return (account.provider.symbol, .primary)
-            case .claude: return (account.provider.symbol, Color(red: 0.73, green: 0.43, blue: 0.30))
-            case .grok: return (account.provider.symbol, .purple)
-            case .snapshot: return (account.provider.symbol, .blue)
+            let key = AccountDisplayOrder.providerKey(
+                product: product ?? (account.provider == .snapshot ? nil : account.provider.rawValue),
+                provider: account.displayService,
+                sourceID: account.orderingSourceID
+            )
+            switch key {
+            case "openai": return ("terminal", .primary)
+            case "anthropic": return ("sparkle", Color(red: 0.73, green: 0.43, blue: 0.30))
+            case "xai": return ("bolt", .purple)
+            case "cursor": return ("cursorarrow", .primary)
+            case "google": return ("sparkles", Color(red: 0.259, green: 0.522, blue: 0.957))
+            case "antigravity": return ("diamond", Color(red: 0.486, green: 0.227, blue: 0.929))
+            case "today": return ("sun.max", Color(red: 0.055, green: 0.647, blue: 0.914))
+            default:
+                switch account.provider {
+                case .codex: return (account.provider.symbol, .primary)
+                case .claude: return (account.provider.symbol, Color(red: 0.73, green: 0.43, blue: 0.30))
+                case .grok: return (account.provider.symbol, .purple)
+                case .snapshot: return (account.provider.symbol, .blue)
+                }
             }
         }
     }

@@ -60,6 +60,34 @@ final class DashboardLayoutTests: XCTestCase {
         XCTAssertEqual(host.fittingSize.height, size.height, accuracy: 1)
     }
 
+    func testDistinctBrandPresentationsForGoogleGeminiAntigravityAndTodayAI() {
+        func account(_ id: String, _ service: String) -> AccountConfig {
+            AccountConfig(provider: .snapshot, name: service, method: .snapshotFile,
+                          location: "/synthetic.json", sourceAccountID: id, serviceLabel: service)
+        }
+        let googleWeb = DashboardView.accountPresentation(for: account("gemini-web", "Gemini Web 1"))
+        let googleCLI = DashboardView.accountPresentation(for: account("gemini-cli", "Gemini CLI"))
+        let googleAPI = DashboardView.accountPresentation(for: account("gemini-api", "Gemini API"))
+        let agy = DashboardView.accountPresentation(for: account("antigravity-2", "Antigravity 2"))
+        let todayCN = DashboardView.accountPresentation(for: account("today-cn", "TodayAI 中国版"))
+        let todayGlobal = DashboardView.accountPresentation(for: account("today-global", "TodayAI 全球版"))
+        let fallback = DashboardView.accountPresentation(for: account("custom", "Custom Agent"))
+
+        XCTAssertEqual(googleWeb.symbol, "sparkles")
+        XCTAssertEqual(googleCLI.symbol, "chevron.left.forwardslash.chevron.right")
+        XCTAssertEqual(googleAPI.symbol, "cpu")
+        XCTAssertEqual(agy.symbol, "diamond")
+        XCTAssertEqual(todayCN.symbol, "sun.max")
+        XCTAssertEqual(todayGlobal.symbol, "sun.max")
+        XCTAssertNotEqual(googleWeb.color, agy.color)
+        XCTAssertNotEqual(googleWeb.color, todayCN.color)
+        XCTAssertNotEqual(agy.color, todayCN.color)
+        XCTAssertNotEqual(googleWeb.color, fallback.color)
+        XCTAssertNotEqual(agy.color, fallback.color)
+        XCTAssertNotEqual(todayCN.color, fallback.color)
+        XCTAssertEqual(Set([googleWeb.symbol, googleCLI.symbol, googleAPI.symbol, agy.symbol, todayCN.symbol, fallback.symbol]).count, 6)
+    }
+
     @MainActor
     func testThirtyAccountDashboardKeepsFiniteStableGeometryAcrossRepeatedLayouts() throws {
         let fixture = try DashboardLayoutFixture()

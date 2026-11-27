@@ -6,7 +6,8 @@ struct ClaudeResetDeadline: Identifiable, Equatable {
     let date: Date?
 
     static func rows(account: AccountConfig, reading: AccountReading) -> [ClaudeResetDeadline] {
-        guard ["Claude", "Anthropic"].contains(account.menuAgentPrefix) else { return [] }
+        let basePrefix = AccountConfig.splitNumberedLabel(account.menuAgentPrefix).base
+        guard ["Claude", "Anthropic"].contains(basePrefix) else { return [] }
         func reset(ids: [String], labels: [String]) -> Date? {
             let window = reading.visibleWindows.first {
                 ids.contains($0.id.lowercased()) || labels.contains($0.label.filter { !$0.isWhitespace })

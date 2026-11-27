@@ -14,6 +14,36 @@ struct QuotaInsightPreferences: Codable, Equatable {
     var quietStart = 22
     var quietEnd = 8
     var passiveNotices = false
+    var codingOnly = false
+
+    enum CodingKeys: String, CodingKey {
+        case favorites, filter, thresholds, expiryHours, quietStart, quietEnd, passiveNotices, codingOnly
+    }
+
+    init(favorites: Set<UUID> = [], filter: QuotaAccountFilter = .all, thresholds: [Int] = [20, 10],
+         expiryHours: Int = 24, quietStart: Int = 22, quietEnd: Int = 8, passiveNotices: Bool = false,
+         codingOnly: Bool = false) {
+        self.favorites = favorites
+        self.filter = filter
+        self.thresholds = thresholds
+        self.expiryHours = expiryHours
+        self.quietStart = quietStart
+        self.quietEnd = quietEnd
+        self.passiveNotices = passiveNotices
+        self.codingOnly = codingOnly
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        favorites = try container.decodeIfPresent(Set<UUID>.self, forKey: .favorites) ?? []
+        filter = try container.decodeIfPresent(QuotaAccountFilter.self, forKey: .filter) ?? .all
+        thresholds = try container.decodeIfPresent([Int].self, forKey: .thresholds) ?? [20, 10]
+        expiryHours = try container.decodeIfPresent(Int.self, forKey: .expiryHours) ?? 24
+        quietStart = try container.decodeIfPresent(Int.self, forKey: .quietStart) ?? 22
+        quietEnd = try container.decodeIfPresent(Int.self, forKey: .quietEnd) ?? 8
+        passiveNotices = try container.decodeIfPresent(Bool.self, forKey: .passiveNotices) ?? false
+        codingOnly = try container.decodeIfPresent(Bool.self, forKey: .codingOnly) ?? false
+    }
 
     func normalized() -> Self {
         var result = self

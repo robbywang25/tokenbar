@@ -23,6 +23,7 @@ final class AppStore: ObservableObject {
     private var insightStateReadFailed = false
     private var insightsPrimed = false
     @Published private(set) var calendarTimeZoneID = "local"
+    @Published private(set) var calendarCodingOnly = false
     // nil preserves the initial one-metric default; [] is an explicit opt-out.
     @Published private(set) var menuQuotaSelection: Set<String>?
     @Published private(set) var rememberedMenuMetrics: [MenuQuotaMetric] = []
@@ -154,6 +155,7 @@ final class AppStore: ObservableObject {
 
     var visibleDashboardAccounts: [AccountConfig] {
         orderedAccounts.filter { account in
+            if insightPreferences.codingOnly && !account.isCoding(reading: readings[account.id]) { return false }
             switch insightPreferences.filter {
             case .all: return true
             case .favorites: return insightPreferences.favorites.contains(account.id)
@@ -227,9 +229,9 @@ final class AppStore: ObservableObject {
         accountEmail(account) ?? "邮箱待确认"
     }
 
-    func calendarModel(at date: Date? = nil) -> ResetCalendarModel {
+    func calendarModel(at date: Date? = nil, codingOnly: Bool = false) -> ResetCalendarModel {
         ResetCalendarModel(accounts: accounts, readings: readings, history: isDemo ? ResetCalendarHistory() : resetCalendarHistory,
-                           now: date ?? now, identity: accountIdentityLabel)
+                           now: date ?? now, codingOnly: codingOnly, identity: accountIdentityLabel)
     }
 
     func accountIdentityHelp(_ account: AccountConfig) -> String {
@@ -852,6 +854,12 @@ final class AppStore: ObservableObject {
         if !isDemo { defaults.set(identifier, forKey: "resetCalendarTimeZone.v1"); onSavedStateChange?() }
     }
 
+    func setCalendarCodingOnly(_ enabled: Bool) {
+        guard enabled != calendarCodingOnly else { return }
+        calendarCodingOnly = enabled
+        if !isDemo { defaults.set(enabled, forKey: "resetCalendarCodingOnly.v1") }
+    }
+
     func setLaunchAtLogin(_ enabled: Bool) {
         Task {
             do {
@@ -873,6 +881,7 @@ final class AppStore: ObservableObject {
     private func load() {
         defer { publishWidgetSnapshot() }
         calendarTimeZoneID = defaults.string(forKey: "resetCalendarTimeZone.v1") ?? "local"
+        calendarCodingOnly = defaults.bool(forKey: "resetCalendarCodingOnly.v1")
         snapshotSourcesReadFailed = false
         do {
             snapshotSources = try read([SnapshotSource].self, name: "snapshot-sources.json")
